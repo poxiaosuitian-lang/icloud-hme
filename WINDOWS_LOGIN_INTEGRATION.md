@@ -1,5 +1,7 @@
 # Windows 协助 Apple Account 新通道登录
 
+服务器 Codex 的完整部署任务见 [SERVER_CODEX_APPLE_LOGIN_DEPLOY.md](SERVER_CODEX_APPLE_LOGIN_DEPLOY.md)。
+
 `POST /api/integrations/appleservices/apple-login` 使用现有 `ICLOUD_HME_IMPORT_TOKEN` Bearer 鉴权；沿用导入接口的请求限流、并发限制和无凭据日志。与管理员 Session、服务 API token 隔离，未配置导入密钥时返回 404。请求最大 8 KiB，不允许跳转、代理参数或任意账号 ID。
 
 请求公共字段：`version:1`、`source_id`（与已导入账号一致）、`apple_id`、`operation`。只对已通过导入验证并绑定该 source_id 和 Apple 身份的账号操作。
