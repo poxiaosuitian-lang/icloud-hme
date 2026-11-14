@@ -642,3 +642,8 @@ DSID 改变或无法证明旧记录身份时冲突，不猜测认领，不创建
 代理层可能以 400/403/413/425 拒绝不合规请求。每连接 IP 5 次失败/15 分钟；
 最多 2 个在途请求；90 秒总验证期限；不会自动重试写入或 Apple 创建动作。
 部署及密钥安全保存步骤见 README。首次真实联调需 Windows 面板执行同步验收。
+
+
+## Windows 自动登录集成
+
+账号导入后可调用 `POST /api/integrations/appleservices/apple-login`，使用专用导入 Bearer 密钥执行 status、login、verify。完整字段、状态和部署步骤见 [WINDOWS_LOGIN_INTEGRATION.md](WINDOWS_LOGIN_INTEGRATION.md)。该接口不使用服务 API token，也不更改现有浏览器认证。

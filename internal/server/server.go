@@ -134,6 +134,7 @@ func (s *Server) register() {
 	api.Use(apiCacheControlMiddleware())
 	s.registerServiceAPI(api)
 	api.POST("/integrations/appleservices/accounts", s.importAppleServices)
+	api.POST("/integrations/appleservices/apple-login", s.importAppleLogin)
 	{
 		// ===== 认证(公开) =====
 		api.POST("/auth/login", s.handleLogin)

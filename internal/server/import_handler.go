@@ -41,16 +41,16 @@ func importFailure(c *gin.Context, status int, code string) {
 	c.AbortWithStatusJSON(status, gin.H{"success": false, "code": code, "message": code})
 }
 
-func (s *Server) importAppleServices(c *gin.Context) {
+func (s *Server) authorizeAppleServices(c *gin.Context) bool {
 	if s.cfg.ImportToken == "" {
 		importFailure(c, 404, "IMPORT_DISABLED")
-		return
+		return false
 	}
 	key := c.ClientIP()
 	if allowed, retry := s.importLimiter.Allow(key); !allowed {
 		c.Header("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
 		importFailure(c, 429, "IMPORT_RATE_LIMITED")
-		return
+		return false
 	}
 	auth := c.Request.Header.Values("Authorization")
 	value := ""
@@ -60,8 +60,17 @@ func (s *Server) importAppleServices(c *gin.Context) {
 	expected, actual := sha256.Sum256([]byte(s.cfg.ImportToken)), sha256.Sum256([]byte(value))
 	if value == "" || subtle.ConstantTimeCompare(expected[:], actual[:]) != 1 {
 		importFailure(c, 401, "IMPORT_UNAUTHORIZED")
+		return false
+	}
+
+	return true
+}
+
+func (s *Server) importAppleServices(c *gin.Context) {
+	if !s.authorizeAppleServices(c) {
 		return
 	}
+	key := c.ClientIP()
 	// An authenticated request is still not allowed to inject arbitrary fields,
 	// query tokens, duplicate keys, multiple JSON values or compressed bodies.
 	media, _, err := mime.ParseMediaType(c.GetHeader("Content-Type"))

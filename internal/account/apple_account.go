@@ -20,6 +20,7 @@ type pendingAppleLogin struct {
 	session               apple.AccountSession
 	expires               time.Time
 	identity, proxy, host string
+	challenge             string
 }
 
 func (m *Manager) appleLock(id string) *sync.Mutex {
@@ -58,6 +59,10 @@ func (m *Manager) LoginAppleAccount(ctx context.Context, id, password, code stri
 	lock := m.appleLock(id)
 	lock.Lock()
 	defer lock.Unlock()
+	return m.loginAppleAccountLocked(ctx, id, password, code, "")
+}
+
+func (m *Manager) loginAppleAccountLocked(ctx context.Context, id, password, code, challenge string) (Summary, error) {
 	a, ok := m.GetAccount(id)
 	if !ok {
 		return Summary{}, fmt.Errorf("账号不存在")
@@ -71,6 +76,9 @@ func (m *Manager) LoginAppleAccount(ctx context.Context, id, password, code stri
 			return Summary{}, ErrAppleOTPExpired
 		}
 		p := v.(pendingAppleLogin)
+		if p.challenge != challenge {
+			return Summary{}, ErrAppleOTPExpired
+		}
 		if time.Now().After(p.expires) || p.identity != a.loginEmail() || p.proxy != a.Proxy || p.host != a.Host {
 			m.applePending.Delete(id)
 			return Summary{}, ErrAppleOTPExpired
@@ -93,7 +101,7 @@ func (m *Manager) LoginAppleAccount(ctx context.Context, id, password, code stri
 			return Summary{}, err
 		}
 		if pending {
-			m.applePending.Store(id, pendingAppleLogin{s, time.Now().Add(pendingLoginTTL), a.loginEmail(), a.Proxy, a.Host})
+			m.applePending.Store(id, pendingAppleLogin{s, time.Now().Add(pendingLoginTTL), a.loginEmail(), a.Proxy, a.Host, challenge})
 			return Summary{}, ErrAppleOTPRequired
 		}
 	}
