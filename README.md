@@ -691,3 +691,53 @@ Create `data/accounts.json` (see `accounts.json.template`) and start the server 
 双通道计划、进度、滚动预算和冷却保存到 `data/dual-schedules.json`，重启后继续，手动停止不会恢复。错过的计划不集中补发；在途结果不确定时暂停核对，避免重复创建。保留本应用的目标数量和总数上限。旧通道和单独新通道模式保持原有设置，不随此次变更调整。
 
 以上是参考项目的本地调度上限，不代表 Apple 保证的配额。协议与调度参考 [t508708/icloud-mail](https://github.com/t508708/icloud-mail)，固定提交及原始来源/许可说明保存在 `internal/icloudmail/`。详细接口和区别见 API.md。
+
+## AppleServices 账号导入（Web HME + IMAP）
+
+Windows 面板的“同步到服务器”填写本服务的 **HTTPS 根地址**及独立同步密钥。
+接口是 `POST /api/integrations/appleservices/accounts`，不复用程序调用 API Token，
+不使用浏览器登录 Cookie；未设置 `ICLOUD_HME_IMPORT_TOKEN` 时返回 404、接口关闭。
+精确请求、响应和错误码见 [API.md](API.md#appleservices-账号导入)。
+
+服务器会依次验证 Apple 返回的身份、完整 HME 目录及主 iCloud 收件地址、固定
+`imap.mail.me.com:993` 的 TLS 登录。全部通过才原子 upsert；任何失败保留旧凭据。
+同一源 ID 并发、重试及重启后都复用同一个账号 ID。旧账号认领还会验证旧 Cookie
+的真实身份；多条匹配、身份/收件地址冲突或无法证明旧账号身份时返回 409。
+保留原账号名称、代理、外部收件设置、第二通道会话、别名使用记录及任务。
+**导入不会创建别名、读取邮件、修改转发、启动任务或登录 Apple Account 第二通道。**
+
+部署使用本 checkout 构建，并保留 `./data:/app/data`：
+
+1. 先备份 `data`、`.env` 和反向代理配置到仅管理员可读的目录，不提交备份。
+2. 在服务器生成至少 32 字符的随机 `ICLOUD_HME_IMPORT_TOKEN`，写入未跟踪的
+   `.env`（权限 `0600`）；不在终端输出、聊天、工单或 Git 中粘贴密钥。
+   例如以下脚本仅在尚未配置时追加 64 位十六进制随机密钥：
+
+   ```sh
+   python3 - <<'PY'
+   import os, secrets
+   path = '.env'
+   fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+   os.fchmod(fd, 0o600)
+   with os.fdopen(fd, 'r+') as f:
+       current = f.read()
+       if not any(line.startswith('ICLOUD_HME_IMPORT_TOKEN=') for line in current.splitlines()):
+           f.write(('\n' if current and not current.endswith('\n') else '') +
+                   'ICLOUD_HME_IMPORT_TOKEN=' + secrets.token_hex(32) + '\n')
+   PY
+   ```
+
+3. HTTPS 代理配置参考 `deploy/appleservices-import.nginx.conf.example`。
+   该路由禁止 HTTP/跳转、0-RTT、代理重试/缓存及请求日志。不要记录 Authorization
+   或请求体；不要开启 HTTP 客户端调试。Compose 默认仅绑定 `127.0.0.1:8081`；
+   代理在另一容器时应使用私有 Docker 网络，不要把凭据接口直接暴露到公网 HTTP。
+   `ICLOUD_HME_BIND` 可以显式调整绑定地址（不要在未隔离的网络使用 `0.0.0.0`）。
+4. 设置 `ICLOUD_HME_SECURE_COOKIE=true`，执行 `docker compose up -d --build`。
+   `data` 目录会收紧为 `0700`，账号文件为 `0600`；旧格式兼容，不清空数据。
+5. 用正常证书校验检查 HTTPS/健康状态；无密钥请求应为 401。从服务器 `.env` 安全
+   取出 `ICLOUD_HME_IMPORT_TOKEN` 值填入 Windows 面板，再做首次真实同步。
+   密钥轮换只更新此变量并重建容器，不影响账号或原来的 API Token。
+
+鉴权/验证失败每连接 IP 最多 5 次/15 分钟，成功清零；并发在途最多 2 个，导入
+按事务串行、单次总超时 90 秒。当前不信任任意 X-Forwarded-For，反向代理下多个
+客户端可能共享失败额度；不要为了解除限流而信任所有代理。

@@ -7,13 +7,14 @@ services:
     container_name: icloud-hme
     restart: unless-stopped
     ports:
-      - "${ICLOUD_HME_PORT:-8081}:8081"
+      - "${ICLOUD_HME_BIND:-127.0.0.1}:${ICLOUD_HME_PORT:-8081}:8081"
     environment:
       ICLOUD_HME_ADMIN_USERNAME: "${ICLOUD_HME_ADMIN_USERNAME}"
       ICLOUD_HME_ADMIN_PASSWORD: "${ICLOUD_HME_ADMIN_PASSWORD}"
       ICLOUD_HME_SESSION_TTL: "${ICLOUD_HME_SESSION_TTL:-12h}"
       ICLOUD_HME_SECURE_COOKIE: "${ICLOUD_HME_SECURE_COOKIE:-false}"
       ICLOUD_HME_API_TOKEN: "${ICLOUD_HME_API_TOKEN:-}"
+      ICLOUD_HME_IMPORT_TOKEN: "${ICLOUD_HME_IMPORT_TOKEN:-}"
       TZ: "${TZ:-Asia/Shanghai}"
     volumes:
       - ./data:/app/data

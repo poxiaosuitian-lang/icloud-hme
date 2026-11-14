@@ -57,3 +57,8 @@ Reference details and pinned versions are recorded in `docs/APPLE-ACCOUNT-RENEWA
 Go and npm dependencies retain their respective licenses; versions are recorded in `go.mod`, `go.sum`, and `web/package-lock.json`. Builds using the current Dockerfile include this notice and `LICENSE` under `/usr/share/licenses/icloud-mail/`. The application image additionally includes the Go standard library license, dependency license and notice files, and version indexes. Base-image components retain their distribution licenses. This repository does not relicense those components.
 
 This is an unofficial self-hosted tool, with no affiliation with or endorsement by Apple Inc.
+
+AppleServices import additions: expose a response-only `ValidatedAppleID` from
+`dsInfo.appleId` (no caller/cookie fallback), and reject explicit negative
+validate responses even when they contain an identity. These are local changes;
+upstream license and attribution are unchanged.

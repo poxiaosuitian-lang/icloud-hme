@@ -52,6 +52,10 @@ func main() {
 	}
 	secureCookie := os.Getenv("ICLOUD_HME_SECURE_COOKIE") == "true"
 	apiToken := os.Getenv("ICLOUD_HME_API_TOKEN")
+	importToken := os.Getenv("ICLOUD_HME_IMPORT_TOKEN")
+	if err := server.ValidateImportToken(importToken); err != nil {
+		log.Fatal(err)
+	}
 
 	log.Printf("iCloud Hide My Email 服务启动 addr=%s", *addr)
 
@@ -75,6 +79,7 @@ func main() {
 		SessionTTL:       sessionTTL,
 		SecureCookie:     secureCookie,
 		APIToken:         apiToken,
+		ImportToken:      importToken,
 		APISettingsFile:  filepath.Join(abs, "api-settings.json"),
 		AliasUsageFile:   filepath.Join(abs, "alias-usage.json"),
 		DualScheduleFile: filepath.Join(abs, "dual-schedules.json"),
@@ -88,6 +93,7 @@ func main() {
 	_ = os.Unsetenv("ICLOUD_HME_ADMIN_PASSWORD")
 	_ = os.Unsetenv("ICLOUD_HME_ADMIN_USERNAME")
 	_ = os.Unsetenv("ICLOUD_HME_API_TOKEN")
+	_ = os.Unsetenv("ICLOUD_HME_IMPORT_TOKEN")
 
 	log.Printf("HTTP 服务就绪 addr=%s", *addr)
 	if err := srv.Run(*addr); err != nil {

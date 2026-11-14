@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import Dialog from './Dialog'
 import { request, ApiError } from '../api/client'
 import type { MailboxSummary } from '../api/types'
@@ -11,7 +11,13 @@ interface MailboxDialogProps {
   onSaved: () => void
 }
 
-export default function MailboxDialog({ accountId, current, open, onClose, onSaved }: MailboxDialogProps) {
+export default function MailboxDialog(props: MailboxDialogProps) {
+  if (!props.open) return null
+  const key = JSON.stringify([props.accountId, props.current])
+  return <MailboxDialogForm key={key} {...props} />
+}
+
+function MailboxDialogForm({ accountId, current, open, onClose, onSaved }: MailboxDialogProps) {
   const [provider, setProvider] = useState(current?.provider || 'qq')
   const [email, setEmail] = useState(current?.email || '')
   const [host, setHost] = useState(current?.imap_host || 'imap.qq.com')
@@ -20,15 +26,6 @@ export default function MailboxDialog({ accountId, current, open, onClose, onSav
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  useEffect(() => {
-    if (!open) return
-    setProvider(current?.provider || 'qq')
-    setEmail(current?.email || '')
-    setHost(current?.imap_host || 'imap.qq.com')
-    setPort(String(current?.imap_port || 993))
-    setCode('')
-    setError('')
-  }, [open, current])
 
   function changeProvider(value: string) {
     setProvider(value)

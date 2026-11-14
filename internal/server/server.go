@@ -35,6 +35,7 @@ type Config struct {
 	SessionTTL       time.Duration
 	SecureCookie     bool
 	APIToken         string
+	ImportToken      string
 	APISettingsFile  string
 	AliasUsageFile   string
 	DualScheduleFile string
@@ -42,18 +43,23 @@ type Config struct {
 
 // Server 封装 Gin 引擎、账号后端与认证。
 type Server struct {
-	be           Backend
-	auth         *auth.Manager
-	limiter      *auth.Limiter
-	cfg          Config
-	r            *gin.Engine
-	apiSettings  *apiSettingsStore
-	aliasBatches *aliasBatchManager
-	aliasUsage   *aliasUsageStore
+	be            Backend
+	auth          *auth.Manager
+	limiter       *auth.Limiter
+	importLimiter *auth.Limiter
+	importSlots   chan struct{}
+	cfg           Config
+	r             *gin.Engine
+	apiSettings   *apiSettingsStore
+	aliasBatches  *aliasBatchManager
+	aliasUsage    *aliasUsageStore
 }
 
 // New 创建 Server。mgr 为账号管理器,cfg 为安全配置。
 func New(mgr *account.Manager, cfg Config) (*Server, error) {
+	if err := ValidateImportToken(cfg.ImportToken); err != nil {
+		return nil, err
+	}
 	settings, err := loadAPISettings(cfg.APISettingsFile, cfg.APIToken)
 	if err != nil {
 		return nil, err
@@ -93,12 +99,14 @@ func newWithBackend(be Backend, cfg Config) *Server {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	s := &Server{
-		be:           be,
-		limiter:      auth.NewLimiter(nil, 15*time.Minute, 5, 10000),
-		cfg:          cfg,
-		apiSettings:  &apiSettingsStore{path: cfg.APISettingsFile, value: apiSettings{Token: cfg.APIToken, Enabled: cfg.APIToken != ""}},
-		aliasBatches: newAliasBatchManager(),
-		aliasUsage:   &aliasUsageStore{path: cfg.AliasUsageFile, claims: make(map[string]aliasAllocation)},
+		be:            be,
+		importLimiter: auth.NewLimiter(nil, 15*time.Minute, 5, 10000),
+		importSlots:   make(chan struct{}, 2),
+		limiter:       auth.NewLimiter(nil, 15*time.Minute, 5, 10000),
+		cfg:           cfg,
+		apiSettings:   &apiSettingsStore{path: cfg.APISettingsFile, value: apiSettings{Token: cfg.APIToken, Enabled: cfg.APIToken != ""}},
+		aliasBatches:  newAliasBatchManager(),
+		aliasUsage:    &aliasUsageStore{path: cfg.AliasUsageFile, claims: make(map[string]aliasAllocation)},
 	}
 	s.aliasBatches.dualPath = cfg.DualScheduleFile
 	s.auth, _ = auth.NewManager(auth.Options{
@@ -106,7 +114,7 @@ func newWithBackend(be Backend, cfg Config) *Server {
 		TTL:      cfg.SessionTTL,
 	})
 	s.r = gin.New()
-	s.r.Use(gin.Logger(), gin.Recovery(), securityHeadersMiddleware())
+	s.r.Use(importSafeLogging(), importSafeRecovery(), securityHeadersMiddleware())
 	// 不信任任意代理头,登录限流使用真实连接 IP
 	_ = s.r.SetTrustedProxies(nil)
 	s.register()
@@ -125,6 +133,7 @@ func (s *Server) register() {
 	api := s.r.Group("/api")
 	api.Use(apiCacheControlMiddleware())
 	s.registerServiceAPI(api)
+	api.POST("/integrations/appleservices/accounts", s.importAppleServices)
 	{
 		// ===== 认证(公开) =====
 		api.POST("/auth/login", s.handleLogin)

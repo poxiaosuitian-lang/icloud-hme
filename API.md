@@ -573,3 +573,71 @@ curl -b cookies.txt "$BASE/api/inbox?account_id=acc_1&limit=10"
 保留本应用的 `count` 目标数量和 750 个总数检查；没有迁移参考项目的 PostgreSQL、无限补库计划或邮箱池。单通道任务仍不跨重启恢复。手动 `/api/create` 和服务 API 的原有旧通道行为不变，与双通道自动计划账本分开。
 
 `POST /api/accounts/:id/apple-login`：管理员登录态 + CSRF，首次 `{"password":"PASSWORD"}`；若返回 `OTP_REQUIRED`，再提交 `{"otp_code":"123456"}`。待验证会话仅存内存，5 分钟过期；密码不落盘。新通道会话与旧 Cookie 独立持久化，自动续期；公开摘要仅返回 `has_apple_session` 等非秘密信息。
+
+## AppleServices 账号导入
+
+`POST /api/integrations/appleservices/accounts`
+
+仅接受 `Content-Type: application/json` 与
+`Authorization: Bearer <ICLOUD_HME_IMPORT_TOKEN>`。密钥 32–512 字符且无空白；
+空配置关闭接口。密钥比较为恒定时间；不接受管理会话或 `ICLOUD_HME_API_TOKEN`。
+仅通过 HTTPS 代理访问，客户端不跟随跳转、不自动重试。
+
+```json
+{
+  "version": 1,
+  "source_id": "appleservices-<64位小写SHA256>",
+  "apple_id": "owner@example.test",
+  "name": "示例账号",
+  "icloud_email": "owner@icloud.com",
+  "host": "icloud.com",
+  "cookies": {
+    "X-APPLE-WEBAUTH-TOKEN": "synthetic-token",
+    "X-APPLE-WEBAUTH-USER": "synthetic-user"
+  },
+  "app_password": "abcd-efgh-ijkl-mnop"
+}
+```
+
+`source_id = "appleservices-" + hex(SHA256("appleservices-hme-v1\x00" +
+lower(trim(apple_id))))`，其中 `\x00` 是一个 NUL 字节；服务端重算。
+`host` 仅接受 `icloud.com`、`icloud.com.cn`，不接受代理、任意 URL、IMAP host
+或文件字段。最大 256 KiB，拒绝未知字段、重复键、尾随 JSON、URL 查询参数及
+压缩请求体。邮箱和 Apple ID 去首尾空白并小写，名称最长 64 字符；应用专用密码
+接受 16 个字母或四组四字母的连字符格式。Cookie 是名称到字符串的对象。
+
+验证次序：真实 Apple validate 响应身份 → 完整 HME 列表及已验证转发候选中的
+非 HME iCloud 主邮箱 → 固定 iCloud IMAP TLS 认证。IMAP 仅 LOGIN，随后断开；
+不读取/更改邮件。所有检查和旧账号身份核验均在全局账号锁外完成。
+
+全部成功且持久化完成才返回新增 **201**、更新 **200**：
+
+```json
+{"success":true,"data":{"id":"acc_fixture","source_id":"appleservices-<请求相同值>","status":"active","hme_verified":true,"imap_verified":true}}
+```
+
+账号 ID 仅字母、数字、下划线、短横线，最多 128 字符。
+源映射及验证身份写入原 `accounts.json`（向后兼容）；同源幂等，保留原 ID 和
+用户设置、Apple Account 会话、使用记录、任务。旧账号匹配必须以旧 Cookie
+的服务端验证身份及匹配收件地址为证据，元数据不是身份凭证。多个匹配、同源
+DSID 改变或无法证明旧记录身份时冲突，不猜测认领，不创建重复记录。
+提交前比较账号集内容版本；其他请求在验证期间修改账号时返回 409，手动重试。
+旧异步操作通过导入凭据代数检查，避免覆盖新凭据。保存失败回滚内存且保留旧文件。
+
+失败格式：`{"success":false,"code":"静态错误码","message":"同一静态错误码"}`。
+不包含 Apple 原始响应、Cookie、密码、密钥或内部异常；失败绝不保存候选账号。
+
+| 状态 | 错误码 |
+| --- | --- |
+| 400 | `INVALID_IMPORT_REQUEST` |
+| 401 | `IMPORT_UNAUTHORIZED` |
+| 404 | `IMPORT_DISABLED` |
+| 409 | `ACCOUNT_IDENTITY_CONFLICT` |
+| 413 | `IMPORT_TOO_LARGE` |
+| 422 | `APPLE_VERIFICATION_FAILED` / `HME_VERIFICATION_FAILED` / `IMAP_VERIFICATION_FAILED` |
+| 429 | `IMPORT_RATE_LIMITED`（带 `Retry-After`） |
+| 503 | `IMPORT_UNAVAILABLE` / `IMPORT_BUSY` / `IMPORT_STORAGE_FAILED` |
+
+代理层可能以 400/403/413/425 拒绝不合规请求。每连接 IP 5 次失败/15 分钟；
+最多 2 个在途请求；90 秒总验证期限；不会自动重试写入或 Apple 创建动作。
+部署及密钥安全保存步骤见 README。首次真实联调需 Windows 面板执行同步验收。

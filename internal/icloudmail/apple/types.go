@@ -54,6 +54,8 @@ func DefaultEndpoints(region Region) (Endpoints, error) {
 // Session is the complete resumable Apple web session. It intentionally has
 // no password field and can be encrypted and persisted as JSON by callers.
 type Session struct {
+	// ValidatedAppleID comes only from dsInfo.appleId, never caller input or cookies.
+	ValidatedAppleID            string             `json:"validated_apple_id,omitempty"`
 	WebVerification             *WebVerification   `json:"web_verification,omitempty"`
 	Account                     *AccountSession    `json:"account_session,omitempty"`
 	Region                      Region             `json:"region"`
@@ -136,6 +138,7 @@ type webservice struct {
 }
 
 func (s *Session) applyAccount(response accountResponse) {
+	s.ValidatedAppleID = response.DSInfo.AppleID
 	s.DSID = string(response.DSInfo.DSID)
 	s.PrimaryEmail = response.DSInfo.PrimaryEmail
 	if s.PrimaryEmail == "" {

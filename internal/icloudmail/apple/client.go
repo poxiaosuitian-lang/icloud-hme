@@ -1218,7 +1218,7 @@ func (op *operation) validate(ctx context.Context) (accountResponse, error) {
 		if err != nil {
 			return accountResponse{}, response.operationError("decode Apple session", ErrInvalidResponse, err)
 		}
-		if account.Success != nil && !*account.Success && string(account.DSInfo.DSID) == "" {
+		if account.Success != nil && !*account.Success {
 			return accountResponse{}, response.operationError("validate Apple session", ErrInvalidSession, nil)
 		}
 		return account, nil

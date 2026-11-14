@@ -24,22 +24,26 @@ import (
 
 // Account 描述一个 iCloud 账号。
 type Account struct {
-	AppleSession  *apple.AccountSession `json:"apple_account_session,omitempty"`
-	ID            string                `json:"id"`
-	Name          string                `json:"name"`
-	RealEmail     string                `json:"real_email"`
-	ICloudEmail   string                `json:"icloud_email"`
-	Cookies       map[string]string     `json:"cookies"`
-	Host          string                `json:"host"`
-	Proxy         string                `json:"proxy,omitempty"` // HTTP/SOCKS5 代理
-	AppPassword   string                `json:"app_password,omitempty"`
-	Mailbox       *MailboxConfig        `json:"mailbox,omitempty"`
-	Status        string                `json:"status"` // active / error
-	AliasTotal    int                   `json:"alias_total"`
-	AliasActive   int                   `json:"alias_active"`
-	LastValidated string                `json:"last_validated"`
-	LastError     string                `json:"last_error,omitempty"`
-	CreatedAt     string                `json:"created_at"`
+	ImportSourceID  string                `json:"import_source_id,omitempty"`
+	VerifiedAppleID string                `json:"verified_apple_id,omitempty"`
+	VerifiedDSID    string                `json:"verified_dsid,omitempty"`
+	ImportRevision  uint64                `json:"import_revision,omitempty"`
+	AppleSession    *apple.AccountSession `json:"apple_account_session,omitempty"`
+	ID              string                `json:"id"`
+	Name            string                `json:"name"`
+	RealEmail       string                `json:"real_email"`
+	ICloudEmail     string                `json:"icloud_email"`
+	Cookies         map[string]string     `json:"cookies"`
+	Host            string                `json:"host"`
+	Proxy           string                `json:"proxy,omitempty"` // HTTP/SOCKS5 代理
+	AppPassword     string                `json:"app_password,omitempty"`
+	Mailbox         *MailboxConfig        `json:"mailbox,omitempty"`
+	Status          string                `json:"status"` // active / error
+	AliasTotal      int                   `json:"alias_total"`
+	AliasActive     int                   `json:"alias_active"`
+	LastValidated   string                `json:"last_validated"`
+	LastError       string                `json:"last_error,omitempty"`
+	CreatedAt       string                `json:"created_at"`
 }
 
 // MailboxConfig describes an external mailbox used to receive forwarded mail.
@@ -53,6 +57,8 @@ type MailboxConfig struct {
 
 // Manager 管理多个 iCloud 账号,线程安全。
 type Manager struct {
+	importOnce    sync.Once
+	importGate    chan struct{}
 	appleLocks    sync.Map
 	applePending  sync.Map
 	appleCancel   context.CancelFunc
@@ -70,9 +76,10 @@ const pendingLoginTTL = 5 * time.Minute
 
 // pendingLogin 保存尚未完成 2FA 的短期 Apple 会话；只驻留内存。
 type pendingLogin struct {
-	client    *hme.Client
-	expiresAt time.Time
-	mu        sync.Mutex
+	importRevision uint64
+	client         *hme.Client
+	expiresAt      time.Time
+	mu             sync.Mutex
 }
 
 // cloneCookies 返回 Cookie map 的独立副本。
@@ -94,6 +101,10 @@ func copyAccount(acc *Account) *Account {
 	}
 	cp := *acc
 	cp.Cookies = cloneCookies(acc.Cookies)
+	if acc.Mailbox != nil {
+		mailbox := *acc.Mailbox
+		cp.Mailbox = &mailbox
+	}
 	if acc.AppleSession != nil {
 		raw, _ := json.Marshal(acc.AppleSession)
 		cp.AppleSession = new(apple.AccountSession)
@@ -104,7 +115,10 @@ func copyAccount(acc *Account) *Account {
 
 // NewManager 创建管理器。dataDir 用于存放 accounts.json。
 func NewManager(dataDir string) (*Manager, error) {
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(dataDir, 0700); err != nil {
 		return nil, err
 	}
 	m := &Manager{
@@ -147,6 +161,9 @@ func (m *Manager) load() error {
 		if os.IsNotExist(err) {
 			return nil
 		}
+		return err
+	}
+	if err := os.Chmod(m.dataFile, 0600); err != nil {
 		return err
 	}
 	var wrapper struct {
@@ -535,7 +552,11 @@ func (m *Manager) HMEClient(id string, verbose bool) (*hme.Client, error) {
 	if len(snap.Cookies) == 0 {
 		return nil, fmt.Errorf("账号未配置 Cookie，无法使用 HME 功能")
 	}
-	return hme.NewClient(snap.Cookies, snap.Host, snap.Proxy, verbose)
+	client, err := hme.NewClient(snap.Cookies, snap.Host, snap.Proxy, verbose)
+	if client != nil {
+		client.AccountRevision = snap.ImportRevision
+	}
+	return client, err
 }
 
 // HMEClientWithPassword 使用账号密码进行两阶段登录。
@@ -562,7 +583,7 @@ func (m *Manager) HMEClientWithPassword(id, password, otpCode string) (*hme.Clie
 		m.mu.RLock()
 		pending := m.pendingLogins[id]
 		m.mu.RUnlock()
-		if pending == nil || time.Now().After(pending.expiresAt) {
+		if pending == nil || pending.importRevision != snap.ImportRevision || time.Now().After(pending.expiresAt) {
 			m.mu.Lock()
 			delete(m.pendingLogins, id)
 			m.mu.Unlock()
@@ -591,7 +612,7 @@ func (m *Manager) HMEClientWithPassword(id, password, otpCode string) (*hme.Clie
 		err = client.StartLogin(email, password)
 		if errors.Is(err, hme.ErrOTPRequired) {
 			m.mu.Lock()
-			m.pendingLogins[id] = &pendingLogin{client: client, expiresAt: time.Now().Add(pendingLoginTTL)}
+			m.pendingLogins[id] = &pendingLogin{importRevision: snap.ImportRevision, client: client, expiresAt: time.Now().Add(pendingLoginTTL)}
 			m.mu.Unlock()
 			return nil, err
 		}
@@ -602,12 +623,12 @@ func (m *Manager) HMEClientWithPassword(id, password, otpCode string) (*hme.Clie
 
 	// 先保存 accountLogin 返回的 Cookie，随后通过 validate 刷新会话并再次持久化。
 	// 国区与美区都走同一条刷新链路，避免只保存登录阶段的临时 token。
-	if err := m.SaveCookies(id, client.Cookies); err != nil {
+	if err := m.SaveCookies(id, client.Cookies, snap.ImportRevision); err != nil {
 		return nil, err
 	}
 	if err := client.ValidateSession(); err != nil {
 		// validate 的失败响应也可能携带 Set-Cookie，尽量保留服务端最新状态。
-		_ = m.SaveCookies(id, client.Cookies)
+		_ = m.SaveCookies(id, client.Cookies, snap.ImportRevision)
 		return nil, err
 	}
 
@@ -617,6 +638,10 @@ func (m *Manager) HMEClientWithPassword(id, password, otpCode string) (*hme.Clie
 	if !ok {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("账号不存在: %s", id)
+	}
+	if cur.ImportRevision != snap.ImportRevision {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("账号凭据已更新, 请重试")
 	}
 	cur.Cookies = cloneCookies(client.Cookies)
 	cur.Status = "active"
@@ -634,6 +659,7 @@ func (m *Manager) HMEClientWithPassword(id, password, otpCode string) (*hme.Clie
 		return nil, saveErr
 	}
 
+	client.AccountRevision = snap.ImportRevision
 	return client, nil
 }
 
@@ -800,7 +826,11 @@ func (m *Manager) SetAppPassword(id, icloudEmail, appPassword string) error {
 	}
 
 	m.mu.RLock()
-	_, ok := m.accounts[id]
+	before, ok := m.accounts[id]
+	var revision uint64
+	if ok {
+		revision = before.ImportRevision
+	}
 	m.mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("账号不存在: %s", id)
@@ -823,6 +853,9 @@ func (m *Manager) SetAppPassword(id, icloudEmail, appPassword string) error {
 	if !ok {
 		return fmt.Errorf("账号不存在: %s", id)
 	}
+	if revision != acc.ImportRevision {
+		return fmt.Errorf("账号凭据已更新, 请重试")
+	}
 	acc.ICloudEmail = icloudEmail
 	acc.AppPassword = appPassword
 	if err := m.save(); err != nil {
@@ -834,15 +867,27 @@ func (m *Manager) SetAppPassword(id, icloudEmail, appPassword string) error {
 
 // SaveCookies 保存指定账号的最新 Cookie（HMEClient 操作后刷新的 token）。
 // 用于客户端 validate/操作过程中从 Set-Cookie 获取了新 token 后持久化。
-func (m *Manager) SaveCookies(id string, cookies map[string]string) error {
+func (m *Manager) SaveCookies(id string, cookies map[string]string, expected ...uint64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	acc, ok := m.accounts[id]
 	if !ok {
 		return fmt.Errorf("账号不存在: %s", id)
 	}
+	revision := uint64(0)
+	if len(expected) > 0 {
+		revision = expected[0]
+	}
+	if revision != acc.ImportRevision {
+		return fmt.Errorf("账号凭据已更新, 请重试")
+	}
+	old := copyAccount(acc)
 	acc.Cookies = cloneCookies(cookies)
-	return m.save()
+	if err := m.save(); err != nil {
+		m.accounts[id] = old
+		return err
+	}
+	return nil
 }
 
 // UpdateCookies 更新指定账号的 Cookie,并自动校验会话有效性。
@@ -894,6 +939,10 @@ func (m *Manager) UpdateCookies(id string, cookies map[string]string) error {
 	if !ok {
 		m.mu.Unlock()
 		return fmt.Errorf("账号不存在: %s", id)
+	}
+	if cur.ImportRevision != snap.ImportRevision {
+		m.mu.Unlock()
+		return fmt.Errorf("账号凭据已更新, 请重试")
 	}
 	cur.Cookies = snap.Cookies
 	cur.Status = snap.Status

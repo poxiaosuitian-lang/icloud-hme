@@ -1594,3 +1594,23 @@ func TestProxyContextSelectsIsolatedTransportsAndRejectsInvalidConfig(t *testing
 		t.Fatal("invalid proxy configuration was accepted")
 	}
 }
+
+func TestValidateResponseIdentityNotInputAndExplicitFailure(t *testing.T) {
+	for _, body := range []string{
+		`{"success":false,"dsInfo":{"appleId":"owner@example.test","dsid":"1"}}`,
+		`{"dsInfo":{"dsid":"1"}}`,
+	} {
+		client, err := NewClient(Config{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) { return testResponse(r, 200, body, nil), nil })})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := client.Validate(context.Background(), Session{Region: RegionGlobal, AppleID: "owner@example.test", ValidatedAppleID: "stale@example.test"})
+		if strings.Contains(body, `"success":false`) {
+			if err == nil {
+				t.Fatal("explicit failure accepted")
+			}
+		} else if err != nil || result.ValidatedAppleID != "" {
+			t.Fatal("input identity was trusted")
+		}
+	}
+}
