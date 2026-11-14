@@ -603,8 +603,9 @@ curl -b cookies.txt "$BASE/api/inbox?account_id=acc_1&limit=10"
 lower(trim(apple_id))))`，其中 `\x00` 是一个 NUL 字节；服务端重算。
 `host` 仅接受 `icloud.com`、`icloud.com.cn`，不接受代理、任意 URL、IMAP host
 或文件字段。最大 256 KiB，拒绝未知字段、重复键、尾随 JSON、URL 查询参数及
-压缩请求体。邮箱和 Apple ID 去首尾空白并小写，名称最长 64 字符；应用专用密码
-接受 16 个字母或四组四字母的连字符格式。Cookie 是名称到字符串的对象。
+压缩请求体。邮箱和 Apple ID 去首尾空白并小写，名称最长 64 字符；Apple ID 不限于邮箱形式。
+应用专用密码原样交给 IMAP 核验（非空、最多 512 字节、无控制字符），不猜测格式。
+Cookie 是名称到字符串的非空对象；身份由 Apple 响应证明，不凭某个 Cookie 名判断。
 
 验证次序：真实 Apple validate 响应身份 → 完整 HME 列表及已验证转发候选中的
 非 HME iCloud 主邮箱 → 固定 iCloud IMAP TLS 认证。IMAP 仅 LOGIN，随后断开；

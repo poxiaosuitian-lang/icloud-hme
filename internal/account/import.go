@@ -60,7 +60,6 @@ func ImportSourceID(appleID string) string {
 }
 
 var importIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
-var appPasswordPattern = regexp.MustCompile(`^[a-zA-Z]{4}(?:-[a-zA-Z]{4}){3}$|^[a-zA-Z]{16}$`)
 
 func (r *ImportRequest) NormalizeAndValidate() error {
 	r.AppleID = normalizeIdentity(r.AppleID)
@@ -68,10 +67,11 @@ func (r *ImportRequest) NormalizeAndValidate() error {
 	r.Name = strings.TrimSpace(r.Name)
 	if r.Version != 1 || r.SourceID != ImportSourceID(r.AppleID) ||
 		(r.Host != "icloud.com" && r.Host != "icloud.com.cn") ||
-		len(r.AppleID) > 254 || validateEmail(r.AppleID) != nil ||
+		r.AppleID == "" || len(r.AppleID) > 254 || strings.IndexFunc(r.AppleID, unicode.IsControl) >= 0 ||
 		len(r.ICloudEmail) > 254 || validateEmail(r.ICloudEmail) != nil || !isImportMailboxDomain(r.ICloudEmail) ||
 		len([]rune(r.Name)) > 64 || strings.IndexFunc(r.Name, unicode.IsControl) >= 0 ||
-		!appPasswordPattern.MatchString(r.AppPassword) || len(r.Cookies) == 0 || len(r.Cookies) > 128 {
+		r.AppPassword == "" || len(r.AppPassword) > 512 || strings.IndexFunc(r.AppPassword, unicode.IsControl) >= 0 ||
+		len(r.Cookies) == 0 || len(r.Cookies) > 128 {
 		return ImportInvalid
 	}
 	// Cookies are HTTP header values; reject rather than silently dropping bytes.
@@ -82,9 +82,6 @@ func (r *ImportRequest) NormalizeAndValidate() error {
 			return ImportInvalid
 		}
 		cookies[name] = value
-	}
-	if cookies["X-APPLE-WEBAUTH-TOKEN"] == "" || cookies["X-APPLE-WEBAUTH-USER"] == "" {
-		return ImportInvalid
 	}
 	r.Cookies = cookies
 	return nil

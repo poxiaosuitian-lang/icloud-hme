@@ -346,3 +346,21 @@ func TestImportCancellationLeavesOldAccount(t *testing.T) {
 	}
 	assertUnchanged(t, m, version, raw)
 }
+
+func TestImportInputDoesNotGuessAppleIdentityOrCredentialFormat(t *testing.T) {
+	r := importFixture()
+	r.AppleID = "+8613800000000"
+	r.SourceID = ImportSourceID(r.AppleID)
+	r.AppPassword = "synthetic-app-credential"
+	r.Cookies = map[string]string{"synthetic-session": "unverified-value"}
+	// Parsing must not substitute for real Apple / IMAP verification. Phone
+	// Apple IDs and future cookie/password formats are not rejected heuristically.
+	if err := r.NormalizeAndValidate(); err != nil {
+		t.Fatal(err)
+	}
+	m := importManager(t)
+	_, _, err := m.importAppleServices(context.Background(), r, fakeImportVerifier{})
+	if err != ImportConflict {
+		t.Fatal("request identity was trusted without Apple proof", err)
+	}
+}
