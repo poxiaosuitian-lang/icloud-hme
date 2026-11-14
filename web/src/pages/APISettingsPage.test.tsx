@@ -141,3 +141,17 @@ it('多账号统计与调用示例按分配结果选择收件账号', async () =
   expect(example).toContain('request_id')
   expect(example).not.toContain('"account_id":"$ACCOUNT_ID"')
 })
+
+
+it('按需恢复展示 Windows 验证提示，刷新仅读取本地队列', async () => {
+  server.use(http.get('/api/settings/recovery', () => HttpResponse.json({ success: true, data: {
+    waiting_connections: 1, accounts: [{ account_id: 'acc_fixture', state: 'paused', message: '需在 Windows 面板完成验证', waiting_connections: 1, last_wait_at: '' }],
+  } })))
+  renderPage()
+  expect(await screen.findByText('需在 Windows 面板完成验证')).toBeInTheDocument()
+  expect(screen.getByText(/只在创建时发现新通道 login_required/)).toBeInTheDocument()
+  const table = screen.getByRole('table', { name: '按需登录恢复状态' })
+  expect(within(table).getByText('acc_fixture')).toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: '刷新本机等待状态' }))
+  expect(await screen.findByText('需在 Windows 面板完成验证')).toBeInTheDocument()
+})

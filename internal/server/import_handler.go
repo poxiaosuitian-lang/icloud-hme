@@ -221,7 +221,18 @@ func importSafeLogging() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if strings.HasPrefix(c.Request.URL.Path, "/api/integrations/appleservices") {
 			c.Next()
-			log.Printf("appleservices import status=%d", c.Writer.Status())
+			operation := "unknown"
+			switch c.Request.URL.Path {
+			case importPath:
+				operation = "accounts"
+			case "/api/integrations/appleservices/apple-login":
+				operation = "apple_login"
+			case "/api/integrations/appleservices/recovery/wait":
+				operation = "recovery_wait"
+			case "/api/integrations/appleservices/recovery/complete":
+				operation = "recovery_complete"
+			}
+			log.Printf("appleservices operation=%s status=%d", operation, c.Writer.Status())
 			return
 		}
 		normal(c)

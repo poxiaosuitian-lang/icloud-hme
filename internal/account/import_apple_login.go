@@ -12,7 +12,7 @@ import (
 )
 
 // Passwords and OTPs exist only for the duration of this request. No password is
-// retained for renewal; the existing Apple session refresher owns that task.
+// retained for renewal; status validation is explicitly requested, never periodic.
 type ImportAppleLoginRequest struct {
 	Version   int    `json:"version"`
 	SourceID  string `json:"source_id"`

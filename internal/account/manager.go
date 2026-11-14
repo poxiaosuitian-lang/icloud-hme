@@ -24,26 +24,27 @@ import (
 
 // Account 描述一个 iCloud 账号。
 type Account struct {
-	ImportSourceID  string                `json:"import_source_id,omitempty"`
-	VerifiedAppleID string                `json:"verified_apple_id,omitempty"`
-	VerifiedDSID    string                `json:"verified_dsid,omitempty"`
-	ImportRevision  uint64                `json:"import_revision,omitempty"`
-	AppleSession    *apple.AccountSession `json:"apple_account_session,omitempty"`
-	ID              string                `json:"id"`
-	Name            string                `json:"name"`
-	RealEmail       string                `json:"real_email"`
-	ICloudEmail     string                `json:"icloud_email"`
-	Cookies         map[string]string     `json:"cookies"`
-	Host            string                `json:"host"`
-	Proxy           string                `json:"proxy,omitempty"` // HTTP/SOCKS5 代理
-	AppPassword     string                `json:"app_password,omitempty"`
-	Mailbox         *MailboxConfig        `json:"mailbox,omitempty"`
-	Status          string                `json:"status"` // active / error
-	AliasTotal      int                   `json:"alias_total"`
-	AliasActive     int                   `json:"alias_active"`
-	LastValidated   string                `json:"last_validated"`
-	LastError       string                `json:"last_error,omitempty"`
-	CreatedAt       string                `json:"created_at"`
+	RecoveryRevision uint64                `json:"recovery_revision,omitempty"`
+	ImportSourceID   string                `json:"import_source_id,omitempty"`
+	VerifiedAppleID  string                `json:"verified_apple_id,omitempty"`
+	VerifiedDSID     string                `json:"verified_dsid,omitempty"`
+	ImportRevision   uint64                `json:"import_revision,omitempty"`
+	AppleSession     *apple.AccountSession `json:"apple_account_session,omitempty"`
+	ID               string                `json:"id"`
+	Name             string                `json:"name"`
+	RealEmail        string                `json:"real_email"`
+	ICloudEmail      string                `json:"icloud_email"`
+	Cookies          map[string]string     `json:"cookies"`
+	Host             string                `json:"host"`
+	Proxy            string                `json:"proxy,omitempty"` // HTTP/SOCKS5 代理
+	AppPassword      string                `json:"app_password,omitempty"`
+	Mailbox          *MailboxConfig        `json:"mailbox,omitempty"`
+	Status           string                `json:"status"` // active / error
+	AliasTotal       int                   `json:"alias_total"`
+	AliasActive      int                   `json:"alias_active"`
+	LastValidated    string                `json:"last_validated"`
+	LastError        string                `json:"last_error,omitempty"`
+	CreatedAt        string                `json:"created_at"`
 }
 
 // MailboxConfig describes an external mailbox used to receive forwarded mail.
@@ -422,6 +423,7 @@ func (m *Manager) UpdateMetadata(id string, input UpdateAccountInput) (Summary, 
 		acc.Name = *name
 	}
 	if (email != nil && *email != acc.ICloudEmail) || (host != nil && *host != acc.Host) {
+		acc.RecoveryRevision++
 		acc.AppleSession = nil
 		m.applePending.Delete(id)
 	}
@@ -448,6 +450,9 @@ func (m *Manager) UpdateProxy(id, proxy string) (Summary, error) {
 	acc, ok := m.accounts[id]
 	if !ok {
 		return Summary{}, fmt.Errorf("账号不存在: %s", id)
+	}
+	if acc.Proxy != proxy {
+		acc.RecoveryRevision++
 	}
 	acc.Proxy = proxy
 	if err := m.save(); err != nil {
@@ -856,6 +861,7 @@ func (m *Manager) SetAppPassword(id, icloudEmail, appPassword string) error {
 	if revision != acc.ImportRevision {
 		return fmt.Errorf("账号凭据已更新, 请重试")
 	}
+	acc.RecoveryRevision++
 	acc.ICloudEmail = icloudEmail
 	acc.AppPassword = appPassword
 	if err := m.save(); err != nil {

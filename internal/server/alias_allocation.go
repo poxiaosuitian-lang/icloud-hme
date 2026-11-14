@@ -433,7 +433,7 @@ func (s *Server) allocateAlias(ctx context.Context, req allocateAliasRequest) (*
 			if err := ctx.Err(); err != nil {
 				return nil, err, true
 			}
-			created, err := s.be.CreateAlias(pool.account.ID, label)
+			created, err := s.createOnChannel(ctx, pool.account.ID, label, channelWeb)
 			if err != nil {
 				return nil, err, true // Never retry an ambiguous creation elsewhere.
 			}

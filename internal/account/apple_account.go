@@ -23,6 +23,7 @@ type pendingAppleLogin struct {
 	challenge                    string
 	importSourceID, verifiedDSID string
 	importRevision               uint64
+	recoveryRevision             uint64
 	mailbox                      string
 }
 
@@ -48,7 +49,7 @@ func (m *Manager) saveAppleSession(snapshot *Account, session apple.AccountSessi
 	}
 	if a.appleLoginIdentity() != snapshot.appleLoginIdentity() || a.ICloudEmail != snapshot.ICloudEmail ||
 		a.ImportSourceID != snapshot.ImportSourceID || a.VerifiedDSID != snapshot.VerifiedDSID ||
-		a.ImportRevision != snapshot.ImportRevision || a.Proxy != snapshot.Proxy || a.Host != snapshot.Host {
+		a.ImportRevision != snapshot.ImportRevision || a.RecoveryRevision != snapshot.RecoveryRevision || a.Proxy != snapshot.Proxy || a.Host != snapshot.Host {
 		return ErrAppleSessionChanged
 	}
 	old := a.AppleSession
@@ -122,7 +123,7 @@ func (m *Manager) loginAppleAccountLocked(ctx context.Context, id, password, cod
 			return Summary{}, err
 		}
 		if pending {
-			m.applePending.Store(id, pendingAppleLogin{session: s, expires: time.Now().Add(pendingLoginTTL), identity: a.appleLoginIdentity(), proxy: a.Proxy, host: a.Host, challenge: challenge, importSourceID: a.ImportSourceID, verifiedDSID: a.VerifiedDSID, importRevision: a.ImportRevision, mailbox: a.ICloudEmail})
+			m.applePending.Store(id, pendingAppleLogin{session: s, expires: time.Now().Add(pendingLoginTTL), identity: a.appleLoginIdentity(), proxy: a.Proxy, host: a.Host, challenge: challenge, importSourceID: a.ImportSourceID, verifiedDSID: a.VerifiedDSID, importRevision: a.ImportRevision, recoveryRevision: a.RecoveryRevision, mailbox: a.ICloudEmail})
 			return Summary{}, ErrAppleOTPRequired
 		}
 	}
@@ -205,41 +206,11 @@ func (m *Manager) startAppleMaintenance() error {
 					}
 					return true
 				})
-				for _, a := range m.ListSummaries() {
-					if ctx.Err() != nil {
-						return
-					}
-					m.refreshAppleAccount(ctx, a.ID)
-				}
+				// Local challenge expiry only; Apple checks are on-demand, never timer-driven.
 			}
 		}
 	}()
 	return nil
-}
-
-func (m *Manager) refreshAppleAccount(ctx context.Context, id string) {
-	lock := m.appleLock(id)
-	if !lock.TryLock() {
-		return
-	}
-	defer lock.Unlock()
-	a, ok := m.GetAccount(id)
-	if !ok || a.AppleSession == nil || !a.AppleSession.NeedsRefresh(time.Now()) {
-		return
-	}
-	callCtx, cancel := context.WithTimeout(appleContext(ctx, a), 60*time.Second)
-	defer cancel()
-	s, err := m.appleClient.RefreshAccountSession(callCtx, *a.AppleSession)
-	if ctx.Err() != nil {
-		return
-	}
-	if err != nil {
-		s.RefreshFailures++
-		s.RefreshRejected = errors.Is(err, apple.ErrInvalidSession) || errors.Is(err, apple.ErrAuthentication)
-		delay := time.Minute * time.Duration(1<<min(s.RefreshFailures, 6))
-		s.RefreshAfter = time.Now().Add(max(delay, apple.RetryDelay(err)))
-	}
-	_ = m.saveAppleSession(a, s)
 }
 
 // Imported Apple IDs may be external email addresses or phone numbers; their
@@ -256,5 +227,5 @@ func (a *Account) appleLoginIdentity() string {
 func (p pendingAppleLogin) matchesAccount(a *Account) bool {
 	return p.identity == a.appleLoginIdentity() && p.proxy == a.Proxy && p.host == a.Host &&
 		p.importSourceID == a.ImportSourceID && p.verifiedDSID == a.VerifiedDSID &&
-		p.importRevision == a.ImportRevision && p.mailbox == a.ICloudEmail
+		p.importRevision == a.ImportRevision && p.recoveryRevision == a.RecoveryRevision && p.mailbox == a.ICloudEmail
 }

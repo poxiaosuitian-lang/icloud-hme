@@ -45,6 +45,8 @@ func (s *Server) creationChannels(id, mode string) ([]string, error) {
 			}
 			return []string{channelApple, channelWeb}, nil
 		}
+		observed, _ := s.recoveryBinding(id)
+		s.requestRecovery(observed)
 		if mode == channelAuto {
 			return []string{channelWeb}, nil
 		}
@@ -54,6 +56,7 @@ func (s *Server) creationChannels(id, mode string) ([]string, error) {
 }
 
 func (s *Server) createOnChannel(ctx context.Context, id, label, channel string) (*hme.CreateResult, error) {
+	observed, _ := s.recoveryBinding(id)
 	var result *hme.CreateResult
 	var err error
 	if channel == "" || channel == channelWeb {
@@ -67,6 +70,14 @@ func (s *Server) createOnChannel(ctx context.Context, id, label, channel string)
 	if err != nil {
 		e := *asBackendError(err)
 		e.CreationChannel = channel
+		if channel == channelApple && e.Code == "APPLE_ACCOUNT_LOGIN_REQUIRED" {
+			if result != nil && result.Email != "" {
+				e.Code = "ALIAS_CONFIRMATION_REQUIRED"
+				e.Message = "创建结果待确认，请核对别名列表；不会自动重放"
+			} else {
+				s.requestRecovery(observed)
+			}
+		}
 		return result, &e
 	}
 	return result, nil

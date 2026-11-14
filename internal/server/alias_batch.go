@@ -114,7 +114,7 @@ func (s *Server) createAliasWithinCustomLimit(ctx context.Context, accountID, la
 	if err := ctx.Err(); err != nil {
 		return nil, total, err
 	}
-	result, err := s.be.CreateAlias(accountID, label)
+	result, err := s.createOnChannel(ctx, accountID, label, channelWeb)
 	if err != nil {
 		return nil, total, err
 	}

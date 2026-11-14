@@ -25,7 +25,7 @@ func (s *Server) dualAvailability(id string) dualAvailability {
 	out := dualAvailability{exists: found, web: a.HasCookies, apple: a.HasAppleSession, webRevision: a.LastValidated, appleRevision: fmt.Sprint(a.HasAppleSession)}
 	if b, ok := s.be.(*managerBackend); ok {
 		if full, ok := b.mgr.GetAccount(id); ok && full.AppleSession != nil {
-			out.appleRevision = full.AppleSession.AuthenticatedAt.UTC().Format(time.RFC3339Nano)
+			out.appleRevision = account.AppleSessionRevision(full)
 		}
 	}
 	return out
@@ -69,7 +69,14 @@ func (s *Server) dualViewLocked(job *aliasBatchJob, availability dualAvailabilit
 // still share the existing per-account lock and authoritative quota check.
 func (s *Server) processDualSlot(ctx context.Context, job *aliasBatchJob) (time.Duration, bool) {
 	m := s.aliasBatches
+	s.recovery.mu.Lock()
+	recovered := s.recovery.records[job.state.AccountID]
+	s.recovery.mu.Unlock()
+	if recovered.State == "done" && recovered.Outcome == "ready" {
+		s.applyRecoveryReady(recovered)
+	}
 	availability := s.dualAvailability(job.state.AccountID)
+	observedBinding, _ := s.recoveryBinding(job.state.AccountID)
 	m.mu.Lock()
 	r := job.dual
 	now := m.dualNow().UTC()
@@ -116,6 +123,9 @@ func (s *Server) processDualSlot(ctx context.Context, job *aliasBatchJob) (time.
 			return 0, true
 		}
 		return delay.Sub(now), false
+	}
+	if !availability.apple {
+		s.requestRecovery(observedBinding)
 	}
 	slot := r.Slot
 	channel := dualSlotChannel(slot)
@@ -204,7 +214,7 @@ func (s *Server) processDualSlot(ctx context.Context, job *aliasBatchJob) (time.
 		case "APPLE_ACCOUNT_LOGIN_REQUIRED":
 			r.AppleRejected = true
 			r.AppleRevision = availability.appleRevision
-			job.state.Message = "新通道会话失效，降级为旧通道每小时 5 个；新登录恢复后自动切回 19+4"
+			job.state.Message = "新通道会话失效，等待本机协助；暂按旧通道每小时 5 个，恢复后下一正常时隙切回 19+4"
 		case "UPSTREAM_UNAUTHORIZED", "COOKIES_REQUIRED":
 			r.WebRejected = true
 			r.WebRevision = availability.webRevision

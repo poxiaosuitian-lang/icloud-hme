@@ -5,6 +5,7 @@ import { useToast } from '../components/ToastProvider'
 import { copyText } from '../utils/clipboard'
 
 interface Settings { enabled: boolean; has_token: boolean; base_path: string }
+interface RecoveryStatus { waiting_connections: number; accounts: { account_id: string; state: string; message: string; waiting_connections: number; last_wait_at: string }[] }
 interface AccountUsage { account_id: string; name: string; used_count: number; unique_email_count: number; available: boolean }
 interface Usage { used_count: number; unique_email_count: number; callers: { caller_id: string; used_count: number }[]; accounts?: AccountUsage[] }
 
@@ -17,6 +18,9 @@ export default function APISettingsPage() {
   const [confirm, setConfirm] = useState<'rotate' | 'save' | 'disable' | null>(null)
   const [retry, setRetry] = useState(0)
   const [callerID, setCallerID] = useState('vendor-a')
+  const [recovery, setRecovery] = useState<RecoveryStatus | null>(null)
+  const [recoveryError, setRecoveryError] = useState('')
+  const [recoveryRefresh, setRecoveryRefresh] = useState(0)
   const [usage, setUsage] = useState<Usage | null>(null)
   const [usageLoading, setUsageLoading] = useState(true)
   const [usageError, setUsageError] = useState('')
@@ -40,6 +44,14 @@ export default function APISettingsPage() {
     }).finally(() => { if (!cancelled) setUsageLoading(false) })
     return () => { cancelled = true }
   }, [usageRetry])
+
+  useEffect(() => {
+    let cancelled = false
+    request<RecoveryStatus>('/api/settings/recovery').then((data) => {
+      if (!cancelled) { setRecovery(data); setRecoveryError('') }
+    }).catch(() => { if (!cancelled) setRecoveryError('恢复状态读取失败，请重试') })
+    return () => { cancelled = true }
+  }, [recoveryRefresh])
 
   async function action(kind: 'reveal' | 'rotate' | 'save' | 'toggle') {
     setBusy(true)
@@ -148,6 +160,20 @@ curl -G "$BASE_URL/inbox/MESSAGE_ID" -H "Authorization: Bearer $TOKEN" --data-ur
             </tr>)}</tbody>
           </table></div> : <p className="hint">暂无调用商使用记录</p>}
         </>}
+      </div>
+      <div className="card api-settings-card">
+        <h3>Windows 按需登录恢复</h3>
+        <p className="hint">只在创建时发现新通道 login_required 才请求本机协助；没有需求时不检查 Apple 会话、不登录、不读取验证码。Windows 程序需保持运行，并勾选对应账号和服务器的“允许服务器按需恢复登录”。</p>
+        <button onClick={() => setRecoveryRefresh((n) => n + 1)}>刷新本机等待状态</button>
+        {recoveryError && <p role="alert" className="alert-error">{recoveryError}</p>}
+        {recovery && <>
+          <p className="hint">当前长轮询等待连接：{recovery.waiting_connections}。此处仅显示服务器队列，不主动访问 Apple。连接为 0 不代表本机一定离线，也可能正在重连或处理任务。</p>
+          <div className="table-wrap"><table aria-label="按需登录恢复状态">
+            <thead><tr><th>账号 ID</th><th>恢复状态</th><th>等待连接</th></tr></thead>
+            <tbody>{recovery.accounts.map((item) => <tr key={item.account_id}><td>{item.account_id}</td><td>{item.message}</td><td>{item.waiting_connections}</td></tr>)}</tbody>
+          </table></div>
+        </>}
+        <p className="hint">需要验证码时请在 Windows 面板完成验证。恢复不重启已停止任务、不补发错过时隙；创建结果不明时仍需人工核对。</p>
       </div>
       <div className="card api-settings-card">
         <h3>多账号分配协调</h3>

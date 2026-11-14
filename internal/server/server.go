@@ -38,21 +38,24 @@ type Config struct {
 	ImportToken      string
 	APISettingsFile  string
 	AliasUsageFile   string
+	RecoveryFile     string
 	DualScheduleFile string
 }
 
 // Server 封装 Gin 引擎、账号后端与认证。
 type Server struct {
-	be            Backend
-	auth          *auth.Manager
-	limiter       *auth.Limiter
-	importLimiter *auth.Limiter
-	importSlots   chan struct{}
-	cfg           Config
-	r             *gin.Engine
-	apiSettings   *apiSettingsStore
-	aliasBatches  *aliasBatchManager
-	aliasUsage    *aliasUsageStore
+	be              Backend
+	auth            *auth.Manager
+	limiter         *auth.Limiter
+	importLimiter   *auth.Limiter
+	importSlots     chan struct{}
+	cfg             Config
+	r               *gin.Engine
+	apiSettings     *apiSettingsStore
+	aliasBatches    *aliasBatchManager
+	aliasUsage      *aliasUsageStore
+	recovery        *recoveryQueue
+	recoveryLimiter *auth.Limiter
 }
 
 // New 创建 Server。mgr 为账号管理器,cfg 为安全配置。
@@ -84,6 +87,9 @@ func New(mgr *account.Manager, cfg Config) (*Server, error) {
 	s := newWithBackend(&managerBackend{mgr: mgr}, cfg)
 	s.apiSettings.value = settings
 	s.aliasUsage = usage
+	if err := s.recovery.load(); err != nil {
+		return nil, err
+	}
 	if err := s.restoreDualSchedules(true); err != nil {
 		return nil, err
 	}
@@ -99,14 +105,16 @@ func newWithBackend(be Backend, cfg Config) *Server {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	s := &Server{
-		be:            be,
-		importLimiter: auth.NewLimiter(nil, 15*time.Minute, 5, 10000),
-		importSlots:   make(chan struct{}, 2),
-		limiter:       auth.NewLimiter(nil, 15*time.Minute, 5, 10000),
-		cfg:           cfg,
-		apiSettings:   &apiSettingsStore{path: cfg.APISettingsFile, value: apiSettings{Token: cfg.APIToken, Enabled: cfg.APIToken != ""}},
-		aliasBatches:  newAliasBatchManager(),
-		aliasUsage:    &aliasUsageStore{path: cfg.AliasUsageFile, claims: make(map[string]aliasAllocation)},
+		be:              be,
+		recovery:        newRecoveryQueue(cfg.RecoveryFile),
+		recoveryLimiter: auth.NewLimiter(nil, 15*time.Minute, 5, 10000),
+		importLimiter:   auth.NewLimiter(nil, 15*time.Minute, 5, 10000),
+		importSlots:     make(chan struct{}, 2),
+		limiter:         auth.NewLimiter(nil, 15*time.Minute, 5, 10000),
+		cfg:             cfg,
+		apiSettings:     &apiSettingsStore{path: cfg.APISettingsFile, value: apiSettings{Token: cfg.APIToken, Enabled: cfg.APIToken != ""}},
+		aliasBatches:    newAliasBatchManager(),
+		aliasUsage:      &aliasUsageStore{path: cfg.AliasUsageFile, claims: make(map[string]aliasAllocation)},
 	}
 	s.aliasBatches.dualPath = cfg.DualScheduleFile
 	s.auth, _ = auth.NewManager(auth.Options{
@@ -135,6 +143,8 @@ func (s *Server) register() {
 	s.registerServiceAPI(api)
 	api.POST("/integrations/appleservices/accounts", s.importAppleServices)
 	api.POST("/integrations/appleservices/apple-login", s.importAppleLogin)
+	api.POST("/integrations/appleservices/recovery/wait", s.recoveryWait)
+	api.POST("/integrations/appleservices/recovery/complete", s.recoveryComplete)
 	{
 		// ===== 认证(公开) =====
 		api.POST("/auth/login", s.handleLogin)
@@ -145,6 +155,7 @@ func (s *Server) register() {
 		authed.Use(requireSession(s.auth))
 		{
 			authed.GET("/settings/api", s.getAPISettings)
+			authed.GET("/settings/recovery", s.recoveryStatus)
 			authed.GET("/settings/api/usage", s.aliasUsageHandler)
 			authed.PUT("/settings/api", csrfCheck(s.auth), s.updateAPISettings)
 			authed.POST("/settings/api/token", csrfCheck(s.auth), s.revealAPIToken)

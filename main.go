@@ -83,6 +83,7 @@ func main() {
 		APISettingsFile:  filepath.Join(abs, "api-settings.json"),
 		AliasUsageFile:   filepath.Join(abs, "alias-usage.json"),
 		DualScheduleFile: filepath.Join(abs, "dual-schedules.json"),
+		RecoveryFile:     filepath.Join(abs, "login-recovery.json"),
 	})
 	if err != nil {
 		log.Fatalf("初始化服务失败: %v", err)

@@ -752,3 +752,13 @@ Windows 面板的“同步到服务器”填写本服务的 **HTTPS 根地址**�
 - `auto_create:false` 只取已有库存，适合由后台计划补充库存的场景。此改动不调整现有双通道 19+4 计划；自动创建仍使用原接口的通道及共享账号创建锁/容量检查。
 - `/api/v1/aliases/usage` 和管理面板统计新增 `accounts` 数组（`account_id`、`name`、`used_count`、`unique_email_count`、`available`）及 `allocation_policy: "least_used_existing_first"`。`available` 仅表示账号仍存在，不代表上游在线；统计是历史占用量，不是实时剩余库存。`?caller_id=...` 同时限定调用商及账号维度统计。未关联或已删除账号的历史记录保留。
 - 账本仍使用 `data/alias-usage.json`，兼容旧记录和旧请求指纹，不清空账号、凭据、密钥或已分配记录。协调与去重保证限于单服务进程，勿让多个副本同时写同一账本。
+
+### Windows 按需登录恢复（事件驱动）
+
+- 仅创建新通道时出现 `APPLE_ACCOUNT_LOGIN_REQUIRED`，或该次创建预检查无新通道会话准备降级，才登记恢复需求。账号必须具有已验证的导入身份绑定。限流、条款确认、容量、网络错误及创建结果不明不会触发自动登录，也不会重放创建。
+- Windows 使用现有 `ICLOUD_HME_IMPORT_TOKEN` 调用 `POST /api/integrations/appleservices/recovery/wait`（最长 25 秒）和 `/recovery/complete`；精确请求协议见 `SERVER_CODEX_ON_DEMAND_LOGIN.md`。32 个独立等待槽和 4 个确认槽，不占用登录/导入的 `importSlots`；成功等待不累计认证失败次数。
+- 队列以 `data/login-recovery.json` 原子保存，权限 `0600`。一个账号一个恢复状态；租约 300 秒，绑定客户端、source、身份/导入/配置版本和失效会话版本。丢失响应、租约过期和 `local_unavailable` 重发同一 job ID。离线重试至少等 5 分钟；`failed` 最多 3 次尝试，前两次分别退避 5/15 分钟后换 job ID；达到上限或需要验证码则持久暂停。重新登录/同步导致版本变化后，旧任务不再有效。
+- `ready` 必须经服务器对已保存 AppleSession 的只读 management 验证，单凭客户端声明不会恢复通道。现有集成登录接口可记录当前租约对应的新会话版本；浏览器手动登录、身份、代理、区域或密码配置变化使旧租约失效。恢复只清除对应版本的拒绝标记，不改变任务停止状态、计划时间、预算或创建数量。
+- 管理面板“API 设置 → Windows 按需登录恢复”及受管理员认证保护的 `GET /api/settings/recovery` 展示本地队列、等待连接和验证提示，不访问 Apple。不暴露主密码、OTP、Cookie、租约或客户端 ID。等待连接为 0 可能是正在重连或处理任务，不作为离线的充分证据。
+- **没有定时 Apple 会话检查**：原维护定时器仅清理本地过期 OTP challenge，已移除后台网络续期循环；创建过程中按需续期以及显式 `apple-login status`/`complete ready` 的只读验证保留。Windows 无任务时也不登录、不读验证码。
+- 协调面向单服务进程；不运行多个写同一账号/队列数据目录的副本。长轮询代理读取超时应超过 35 秒。部署保留账号、任务、密钥和数据卷；没有自然失效事件时只能验收接口与等待连接，不能宣称已完成真实恢复闭环。

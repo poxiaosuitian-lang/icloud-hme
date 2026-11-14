@@ -73,6 +73,9 @@ func (s *Server) importAppleLogin(c *gin.Context) {
 		}
 		return
 	}
+	if result.State == "ready" {
+		s.acceptRecoverySession(req.SourceID)
+	}
 	s.importLimiter.Success(c.ClientIP())
 	c.JSON(200, gin.H{"success": true, "data": result})
 }
