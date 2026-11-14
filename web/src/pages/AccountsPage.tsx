@@ -20,6 +20,8 @@ import {
   IconTrash,
   IconKey,
   IconMail,
+  IconAliases,
+  IconAccounts,
 } from '../components/icons'
 
 const statusMeta: Record<string, { text: string; badge: string; icon: typeof IconCheck }> = {
@@ -126,11 +128,11 @@ export default function AccountsPage() {
   }
 
   return (
-    <section>
+    <section className="accounts-page">
       <div className="page-header">
         <div className="page-title">
           <h2>账号管理</h2>
-          <p>管理 iCloud 账号、Cookie 与登录凭据</p>
+          <p>统一管理账号连接、登录凭据与收件服务</p>
         </div>
         <button
           className="primary"
@@ -144,6 +146,15 @@ export default function AccountsPage() {
         </button>
       </div>
 
+      {!loading && !error && accounts.length > 0 && (
+        <dl className="accounts-overview" aria-label="账号概览">
+          <div><dt>全部账号</dt><dd>{accounts.length}<span>个账号</span></dd></div>
+          <div><dt>运行正常</dt><dd>{accounts.filter((acc) => acc.status === 'active').length}<span>个账号</span></dd></div>
+          <div><dt>新通道会话</dt><dd>{accounts.filter((acc) => acc.has_apple_session).length}<span>个会话</span></dd></div>
+          <div><dt>启用别名</dt><dd>{accounts.reduce((sum, acc) => sum + acc.alias_active, 0)}<span>个别名</span></dd></div>
+        </dl>
+      )}
+
       <AsyncState
         loading={loading}
         error={error}
@@ -151,87 +162,78 @@ export default function AccountsPage() {
         emptyText="暂无账号，点击“添加账号”开始"
         onRetry={handleRetry}
       >
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>名称</th>
-                <th>邮箱</th>
-                <th>状态</th>
-                <th>别名</th>
-                <th>凭据</th>
-                <th>最近验证</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {accounts.map((acc) => (
-                <tr key={acc.id}>
-                  <td>
-                    {acc.name}
-                    {acc.status_message && (
-                      <span className="hint" style={{ display: 'block' }}>
-                        {acc.status_message}
-                      </span>
-                    )}
-                  </td>
-                  <td>
-                    {acc.icloud_email || acc.real_email || '—'}
-                    <span className="cell-secondary">{acc.id}</span>
-                  </td>
-                  <td>
-                    <StatusBadge status={acc.status} />
-                  </td>
-                  <td>
-                    <span className="cell-strong">
-                      {acc.alias_active} / {acc.alias_total}
-                    </span>
-                  </td>
-                  <td>{credText(acc)}</td>
-                  <td>{acc.last_validated ? acc.last_validated : '—'}</td>
-                  <td>
-                    <div className="row-actions">
-                      <button onClick={() => { setEditing(acc); setFormOpen(true) }}>
-                        <IconEdit size={14} />
-                        编辑
-                      </button>
-                      <button onClick={() => setCookieFor(acc)}>更新 Cookie</button>
-                      <button
-                        className={acc.has_cookies ? 'credential-action configured' : 'credential-action'}
-                        title={acc.has_cookies ? '当前已登录；点击可重新登录并刷新 Cookie' : '使用 Apple 账户密码登录'}
-                        onClick={() => setLoginFor(acc)}
-                      >
-                        {acc.has_cookies ? <IconCheck size={14} /> : <IconKey size={14} />}
-                        {acc.has_cookies ? 'iCloud 已登录' : 'iCloud 登录'}
-                      </button>
-                      <button
-                        className={acc.has_app_password ? 'credential-action configured' : 'credential-action'}
-                        title={acc.has_app_password ? '当前已设置；点击可更新 App 专用密码' : '设置用于 IMAP 收件的 App 专用密码'}
-                        onClick={() => setAppPwdFor(acc)}
-                      >
-                        {acc.has_app_password && <IconCheck size={14} />}
-                        {acc.has_app_password ? 'App 密码已设置' : '设置 App 密码'}
-                      </button>
-                      <button onClick={() => setAppleLoginFor(acc)} className={acc.has_apple_session ? 'credential-action configured' : 'credential-action'}>
-                        {acc.has_apple_session ? '新通道会话已保存' : '登录新通道'}
-                      </button>
-                      <button onClick={() => setMailboxFor(acc)}>接入收件邮箱</button>
-                      <button onClick={() => setProxyFor(acc)}>设置代理</button>
-                      <Link to={`/aliases?account_id=${acc.id}`}>别名</Link>
-                      <Link to={`/inbox?account_id=${acc.id}`}>
-                        <IconMail size={14} />
-                        收件箱
-                      </Link>
-                      <button className="danger" onClick={() => setDeleteFor(acc)}>
-                        <IconTrash size={14} />
-                        删除
-                      </button>
+        <div className="account-card-list">
+          {accounts.map((acc) => (
+            <article className="account-card" key={acc.id} aria-labelledby={`account-title-${acc.id}`}>
+              <div className="account-card-body">
+                <div className="account-identity">
+                  <span className="account-avatar" aria-hidden="true"><IconAccounts size={24} /></span>
+                  <div className="account-identity-text">
+                    <div className="account-title-line">
+                      <h3 id={`account-title-${acc.id}`}>{acc.name}</h3>
+                      <StatusBadge status={acc.status} />
+                      <span className="account-region">{acc.host === 'icloud.com.cn' ? '中国区' : '全球区'}</span>
                     </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    <p className="account-email">{acc.icloud_email || acc.real_email || '未设置邮箱'}</p>
+                    <span className="account-id">{acc.id}</span>
+                  </div>
+                </div>
+                <dl className="account-metrics">
+                  <div><dt>启用 / 全部别名</dt><dd>{acc.alias_active} / {acc.alias_total}</dd></div>
+                  <div><dt>最近验证</dt><dd className="account-verified-at">
+                    {acc.last_validated && !Number.isNaN(Date.parse(acc.last_validated))
+                      ? <time dateTime={acc.last_validated} title={acc.last_validated}>{new Date(acc.last_validated).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })}</time>
+                      : '尚未验证'}
+                  </dd></div>
+                </dl>
+                <div className="account-configuration">
+                  <span className="account-configuration-label">凭据配置</span>
+                  <p>{credText(acc)}</p>
+                  {acc.status_message && <p className="account-status-note">{acc.status_message}</p>}
+                </div>
+              </div>
+
+              <div className="account-operations">
+                <div className="account-action-section" role="group" aria-label={`${acc.name}的登录与凭据`}>
+                  <h4>登录与凭据</h4>
+                  <div className="account-action-grid">
+                    <button
+                      className={acc.has_cookies ? 'configured' : ''}
+                      title={acc.has_cookies ? '当前已登录；点击可重新登录并刷新 Cookie' : '使用 Apple 账户密码登录'}
+                      onClick={() => setLoginFor(acc)}
+                    >
+                      {acc.has_cookies ? <IconCheck size={16} /> : <IconKey size={16} />}
+                      <span>{acc.has_cookies ? 'iCloud 已登录' : 'iCloud 登录'}</span>
+                    </button>
+                    <button onClick={() => setAppleLoginFor(acc)} className={acc.has_apple_session ? 'configured' : ''}>
+                      {acc.has_apple_session ? <IconCheck size={16} /> : <IconKey size={16} />}
+                      <span>{acc.has_apple_session ? '新通道会话已保存' : '登录新通道'}</span>
+                    </button>
+                    <button onClick={() => setCookieFor(acc)}><IconEdit size={16} /><span>更新 Cookie</span></button>
+                    <button
+                      className={acc.has_app_password ? 'configured' : ''}
+                      title={acc.has_app_password ? '当前已设置；点击可更新 App 专用密码' : '设置用于 IMAP 收件的 App 专用密码'}
+                      onClick={() => setAppPwdFor(acc)}
+                    >
+                      {acc.has_app_password ? <IconCheck size={16} /> : <IconKey size={16} />}
+                      <span>{acc.has_app_password ? 'App 密码已设置' : '设置 App 密码'}</span>
+                    </button>
+                    <button onClick={() => setProxyFor(acc)}><IconAccounts size={16} /><span>设置代理</span></button>
+                  </div>
+                </div>
+                <div className="account-action-section" role="group" aria-label={`${acc.name}的账号与邮箱`}>
+                  <h4>账号与邮箱</h4>
+                  <div className="account-action-grid">
+                    <button onClick={() => setMailboxFor(acc)}><IconMail size={16} /><span>接入收件邮箱</span></button>
+                    <Link to={`/aliases?account_id=${encodeURIComponent(acc.id)}`}><IconAliases size={16} /><span>别名</span></Link>
+                    <Link to={`/inbox?account_id=${encodeURIComponent(acc.id)}`}><IconMail size={16} /><span>收件箱</span></Link>
+                    <button onClick={() => { setEditing(acc); setFormOpen(true) }}><IconEdit size={16} /><span>编辑</span></button>
+                    <button className="danger" onClick={() => setDeleteFor(acc)}><IconTrash size={16} /><span>删除</span></button>
+                  </div>
+                </div>
+              </div>
+            </article>
+          ))}
         </div>
       </AsyncState>
 

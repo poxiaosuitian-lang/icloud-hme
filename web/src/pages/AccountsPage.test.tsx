@@ -91,6 +91,44 @@ describe('AccountsPage', () => {
     expect(screen.queryByText(/cookie-secret|app-secret|proxy-secret/)).toBeNull()
   })
 
+  it('账号卡片提供两组固定操作，链接指向各自账号，概览计数准确', async () => {
+    server.use(http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })))
+    renderPage()
+    await screen.findByRole('article', { name: '活跃号' })
+    const overview = screen.getByLabelText('账号概览')
+    expect(within(overview).getByText('全部账号').nextElementSibling).toHaveTextContent('3个账号')
+    expect(within(overview).getByText('运行正常').nextElementSibling).toHaveTextContent('1个账号')
+    expect(within(overview).getByText('启用别名').nextElementSibling).toHaveTextContent('12个别名')
+    for (const account of accounts) {
+      const card = within(screen.getByRole('article', { name: account.name }))
+      expect(card.getAllByRole('button')).toHaveLength(8)
+      expect(card.getAllByRole('link')).toHaveLength(2)
+      expect(within(card.getByRole('group', { name: `${account.name}的登录与凭据` })).getAllByRole('button')).toHaveLength(5)
+      const management = within(card.getByRole('group', { name: `${account.name}的账号与邮箱` }))
+      expect(management.getAllByRole('button')).toHaveLength(3)
+      expect(management.getByRole('link', { name: '别名' })).toHaveAttribute('href', `/aliases?account_id=${account.id}`)
+      expect(management.getByRole('link', { name: '收件箱' })).toHaveAttribute('href', `/inbox?account_id=${account.id}`)
+    }
+  })
+
+  it('弹窗无嵌套按钮，支持遮罩关闭、Escape 和焦点恢复', async () => {
+    server.use(http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })))
+    renderPage()
+    await screen.findByText('活跃号')
+    const user = userEvent.setup()
+    const trigger = screen.getByRole('button', { name: /添加账号/ })
+    await user.click(trigger)
+    expect(document.querySelector('button button')).toBeNull()
+    expect(within(screen.getByRole('dialog')).getByLabelText(/名称/)).toHaveFocus()
+    await user.click(screen.getByRole('button', { name: '关闭对话框' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(trigger).toHaveFocus()
+    await user.click(trigger)
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(trigger).toHaveFocus()
+  })
+
   it('添加账号:校验必填、请求期间禁用、成功刷新', async () => {
     let listData = accounts
     server.use(
@@ -200,7 +238,7 @@ describe('AccountsPage', () => {
     renderPage()
     await screen.findByText('活跃号')
     const user = userEvent.setup()
-    const activeRow = screen.getByText('活跃号').closest('tr')!
+    const activeRow = screen.getByRole('article', { name: '活跃号' })
     await user.click(within(activeRow).getByRole('button', { name: /iCloud 已登录/ }))
     expect(screen.getByText('已保存 iCloud Cookie')).toBeInTheDocument()
     expect(screen.getByText('iCloud 登录邮箱：active@icloud.com')).toBeInTheDocument()
@@ -239,7 +277,7 @@ describe('AccountsPage', () => {
     renderPage()
     await screen.findByText('活跃号')
     const user = userEvent.setup()
-    const activeRow = screen.getByText('活跃号').closest('tr')!
+    const activeRow = screen.getByRole('article', { name: '活跃号' })
     await user.click(within(activeRow).getByRole('button', { name: /iCloud 已登录/ }))
     await user.type(screen.getByLabelText(/密码/), 'p@ssw0rd')
     await user.click(screen.getByRole('button', { name: /重新登录/ }))
@@ -264,7 +302,7 @@ describe('AccountsPage', () => {
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: /App 密码已设置/ }))
     expect(screen.getByText('已完成 App 专用密码设置')).toBeInTheDocument()
-    const emailInput = screen.getByLabelText(/邮箱/)
+    const emailInput = within(screen.getByRole('dialog')).getByLabelText(/邮箱/)
     expect(emailInput).toHaveValue('active@icloud.com')
     await user.clear(emailInput)
     await user.type(emailInput, 'app@icloud.com')

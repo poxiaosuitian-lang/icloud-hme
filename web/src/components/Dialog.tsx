@@ -62,14 +62,8 @@ export default function Dialog({ title, open, onClose, children }: DialogProps) 
   if (!open) return null
 
   return (
-    <button
-      type="button"
-      className="dialog-backdrop"
-      aria-label="关闭对话框"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose()
-      }}
-    >
+    <div className="dialog-backdrop">
+      <button type="button" className="dialog-overlay" aria-label="关闭对话框" tabIndex={-1} onClick={onClose} />
       <div
         ref={ref}
         className="dialog"
@@ -80,6 +74,6 @@ export default function Dialog({ title, open, onClose, children }: DialogProps) 
         <h3>{title}</h3>
         {children}
       </div>
-    </button>
+    </div>
   )
 }
