@@ -23,10 +23,11 @@ type ImportAppleLoginRequest struct {
 	Challenge string `json:"challenge,omitempty"`
 }
 type ImportAppleLoginResult struct {
-	SourceID     string `json:"source_id"`
-	State        string `json:"state"`
-	Challenge    string `json:"challenge,omitempty"`
-	Verification string `json:"verification,omitempty"`
+	DeviceCodeSupported bool   `json:"device_code_supported"`
+	SourceID            string `json:"source_id"`
+	State               string `json:"state"`
+	Challenge           string `json:"challenge,omitempty"`
+	Verification        string `json:"verification,omitempty"`
 }
 
 func (r *ImportAppleLoginRequest) Validate() error {
@@ -43,7 +44,7 @@ func (r *ImportAppleLoginRequest) Validate() error {
 		if r.Password == "" || len(r.Password) > 1024 || r.Code != "" || r.Challenge != "" {
 			return ImportInvalid
 		}
-	case "verify":
+	case "verify", "verify_device":
 		if r.Password != "" || !regexp.MustCompile(`^[0-9]{6}$`).MatchString(r.Code) || !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(r.Challenge) {
 			return ImportInvalid
 		}
@@ -53,7 +54,7 @@ func (r *ImportAppleLoginRequest) Validate() error {
 	return nil
 }
 func (m *Manager) ImportAppleLogin(ctx context.Context, r ImportAppleLoginRequest) (ImportAppleLoginResult, error) {
-	out := ImportAppleLoginResult{SourceID: r.SourceID}
+	out := ImportAppleLoginResult{SourceID: r.SourceID, DeviceCodeSupported: true}
 	if err := r.Validate(); err != nil {
 		return out, err
 	}
@@ -123,7 +124,7 @@ func (m *Manager) ImportAppleLogin(ctx context.Context, r ImportAppleLoginReques
 		}
 		challenge = hex.EncodeToString(nonce)
 	}
-	_, err := m.loginAppleAccountLocked(ctx, id, r.Password, r.Code, challenge)
+	_, err := m.loginAppleAccountLocked(ctx, id, r.Password, r.Code, challenge, r.Operation == "verify_device")
 	if errors.Is(err, ErrAppleOTPRequired) || errors.Is(err, apple.ErrTwoFactorCode) {
 		out.State = "otp_required"
 		out.Challenge = challenge

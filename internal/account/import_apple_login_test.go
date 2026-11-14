@@ -33,9 +33,11 @@ func TestImportAppleLoginBindingAndChallenge(t *testing.T) {
 		calls++
 		body := "{}"
 		status := 200
+		headers := make(http.Header)
 		switch r.URL.Path {
 		case "/appleauth/auth/verify/trusteddevice/securitycode":
 			if reject {
+				headers.Set("scnt", "fixture-rotated-scnt")
 				status = 400
 			}
 		case "/appleauth/auth/2sv/trust":
@@ -48,7 +50,7 @@ func TestImportAppleLoginBindingAndChallenge(t *testing.T) {
 		default:
 			t.Errorf("unexpected mutation/path %s", r.URL.Path)
 		}
-		return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+		return &http.Response{StatusCode: status, Header: headers, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
 	})})
 	if err != nil {
 		t.Fatal(err)
@@ -64,9 +66,9 @@ func TestImportAppleLoginBindingAndChallenge(t *testing.T) {
 	if _, err = m.ImportAppleLogin(context.Background(), bad); err != ImportConflict || calls != 0 {
 		t.Fatal("wrong identity reached Apple")
 	}
-	pending := pendingAppleLogin{session: apple.AccountSession{AppleID: req.AppleID, SCNT: "fixture-scnt", FrameID: "fixture-frame"}, expires: time.Now().Add(time.Minute), identity: req.AppleID, host: "icloud.com", challenge: nonce, importSourceID: source, verifiedDSID: "12345", mailbox: "different@icloud.com"}
+	pending := pendingAppleLogin{session: apple.AccountSession{AppleID: req.AppleID, SCNT: "fixture-scnt", FrameID: "fixture-frame", Verification: &apple.WebVerification{Method: "sms", PhoneID: 7, Phones: []apple.TrustedPhone{{ID: 7}}}}, expires: time.Now().Add(time.Minute), identity: req.AppleID, host: "icloud.com", challenge: nonce, importSourceID: source, verifiedDSID: "12345", mailbox: "different@icloud.com"}
 	m.applePending.Store("fixture", pending)
-	req.Operation = "verify"
+	req.Operation = "verify_device"
 	req.Challenge = strings.Repeat("b", 64)
 	req.Code = "123456"
 	if _, err = m.ImportAppleLogin(context.Background(), req); !errors.Is(err, ErrAppleOTPExpired) || calls != 0 {
@@ -86,7 +88,7 @@ func TestImportAppleLoginBindingAndChallenge(t *testing.T) {
 	if err != nil || out.Challenge != nonce || calls != 0 {
 		t.Fatal("pending login was repeated")
 	}
-	req.Operation = "verify"
+	req.Operation = "verify_device"
 	req.Password = ""
 	req.Code = "123456"
 	req.Challenge = nonce
@@ -94,6 +96,13 @@ func TestImportAppleLoginBindingAndChallenge(t *testing.T) {
 	out, err = m.ImportAppleLogin(context.Background(), req)
 	if err != nil || out.State != "otp_required" || calls != 1 {
 		t.Fatal("invalid code did not preserve challenge")
+	}
+	storedPending, _ := m.applePending.Load("fixture")
+	if storedPending.(pendingAppleLogin).session.Verification.Method != "sms" || storedPending.(pendingAppleLogin).session.SCNT != "fixture-rotated-scnt" {
+		t.Fatal("device failure discarded SMS option")
+	}
+	if !out.DeviceCodeSupported || out.Verification != "sms" {
+		t.Fatal("verification capabilities missing")
 	}
 	reject = false
 	out, err = m.ImportAppleLogin(context.Background(), req)

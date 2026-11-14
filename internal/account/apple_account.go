@@ -64,10 +64,10 @@ func (m *Manager) LoginAppleAccount(ctx context.Context, id, password, code stri
 	lock := m.appleLock(id)
 	lock.Lock()
 	defer lock.Unlock()
-	return m.loginAppleAccountLocked(ctx, id, password, code, "")
+	return m.loginAppleAccountLocked(ctx, id, password, code, "", false)
 }
 
-func (m *Manager) loginAppleAccountLocked(ctx context.Context, id, password, code, challenge string) (Summary, error) {
+func (m *Manager) loginAppleAccountLocked(ctx context.Context, id, password, code, challenge string, deviceCode bool) (Summary, error) {
 	a, ok := m.GetAccount(id)
 	if !ok {
 		return Summary{}, fmt.Errorf("账号不存在")
@@ -88,8 +88,24 @@ func (m *Manager) loginAppleAccountLocked(ctx context.Context, id, password, cod
 			m.applePending.Delete(id)
 			return Summary{}, ErrAppleOTPExpired
 		}
-		s, err = m.appleClient.VerifyAccountCode(ctx, p.session, code)
+		// Verification source is explicit: a device code must never go to the
+		// phone/securitycode endpoint merely because Apple selected a phone.
+		attempt := p.session
+		if deviceCode {
+			verification := apple.WebVerification{}
+			if p.session.Verification != nil {
+				verification = *p.session.Verification
+			}
+			verification.Method, verification.PhoneID = "device", 0
+			attempt.Verification = &verification
+		}
+		s, err = m.appleClient.VerifyAccountCode(ctx, attempt, code)
 		if err != nil {
+			// Keep rotated headers/cookies but retain the original SMS option
+			// for a later, explicitly selected phone-code attempt.
+			if deviceCode {
+				s.Verification = p.session.Verification
+			}
 			p.session = s
 			m.applePending.Store(id, p)
 			return Summary{}, err
