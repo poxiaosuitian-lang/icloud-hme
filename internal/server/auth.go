@@ -4,6 +4,8 @@
 package server
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"net/http"
 	"strconv"
 	"time"
@@ -71,9 +73,10 @@ func clearSessionCookie(c *gin.Context) {
 // handleLogin 处理 POST /api/auth/login。
 func (s *Server) handleLogin(c *gin.Context) {
 	var req struct {
+		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil || req.Password == "" {
+	if err := c.ShouldBindJSON(&req); err != nil || req.Username == "" || req.Password == "" {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数错误")
 		return
 	}
@@ -86,9 +89,17 @@ func (s *Server) handleLogin(c *gin.Context) {
 		return
 	}
 
-	sessionID, sess, valid := s.auth.Login(req.Password)
+	wantUsername := sha256.Sum256([]byte(s.cfg.AdminUsername))
+	gotUsername := sha256.Sum256([]byte(req.Username))
+	usernameValid := subtle.ConstantTimeCompare(gotUsername[:], wantUsername[:]) == 1
+	sessionID, sess, passwordValid := s.auth.Login(req.Password)
+	valid := usernameValid && passwordValid
 	if !valid {
-		failCode(c, http.StatusUnauthorized, "INVALID_CREDENTIALS", "管理员密码错误")
+		// 密码碰巧正确但账号错误时,销毁刚创建的临时会话。
+		if sessionID != "" {
+			s.auth.Logout(sessionID)
+		}
+		failCode(c, http.StatusUnauthorized, "INVALID_CREDENTIALS", "管理员账号或密码错误")
 		return
 	}
 	s.limiter.Success(ip)

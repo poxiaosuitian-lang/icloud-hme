@@ -4,6 +4,7 @@ import { request, ApiError } from '../api/client'
 import type { AccountSummary, Alias } from '../api/types'
 import AsyncState from '../components/AsyncState'
 import CreateAliasDialog from '../components/CreateAliasDialog'
+import AutoAliasRegistration from '../components/AutoAliasRegistration'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { useToast } from '../components/ToastProvider'
 import { copyText } from '../utils/clipboard'
@@ -77,6 +78,7 @@ export default function AliasesPage() {
 
   const [searchParams, setSearchParams] = useSearchParams()
   const { show, showCopyable } = useToast()
+  const refreshAliases = useCallback(() => setRetryKey((key) => key + 1), [])
 
   // 加载账号列表
   useEffect(() => {
@@ -230,7 +232,7 @@ export default function AliasesPage() {
           <h2>别名管理</h2>
           <p>创建、停用、激活或删除 Hide My Email 别名</p>
         </div>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div className="list-header-actions">
           <label htmlFor="alias-account">账号</label>
           <select
             id="alias-account"
@@ -239,7 +241,6 @@ export default function AliasesPage() {
               setAccountId(e.target.value)
               setSearchParams({ account_id: e.target.value }, { replace: true })
             }}
-            style={{ width: 'auto' }}
           >
             {accounts.map((a) => (
               <option key={a.id} value={a.id}>
@@ -247,17 +248,22 @@ export default function AliasesPage() {
               </option>
             ))}
           </select>
-          <button className="primary" onClick={() => setCreateOpen(true)} disabled={!accountId}>
+          <button className="primary" onClick={() => setCreateOpen(true)} disabled={!accountId || aliases.length >= 750}>
             <IconPlus size={16} />
             创建别名
           </button>
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
-        <div style={{ flex: 1, minWidth: 200 }}>
+      {accountId && (
+        <AutoAliasRegistration key={accountId} accountId={accountId} aliasTotal={aliases.length}
+          onAliasesChanged={refreshAliases} />
+      )}
+
+      <div className="list-toolbar alias-toolbar">
+        <div className="toolbar-field toolbar-search">
           <label htmlFor="alias-search">搜索</label>
-          <div style={{ position: 'relative' }}>
+          <div className="search-input-wrap">
             <input
               id="alias-search"
               type="search"
@@ -282,13 +288,12 @@ export default function AliasesPage() {
             </span>
           </div>
         </div>
-        <div>
+        <div className="toolbar-field">
           <label htmlFor="alias-filter">状态</label>
           <select
             id="alias-filter"
             value={filter}
             onChange={(e) => setFilter(e.target.value as 'all' | 'active' | 'inactive')}
-            style={{ width: 'auto' }}
           >
             <option value="all">全部</option>
             <option value="active">已启用</option>
@@ -305,7 +310,14 @@ export default function AliasesPage() {
         onRetry={handleRetry}
       >
         <div className="table-wrap">
-          <table>
+          <table className="compact-table aliases-table">
+            <colgroup>
+              <col className="alias-email-column" />
+              <col />
+              <col className="status-column" />
+              <col className="date-column" />
+              <col className="alias-actions-column" />
+            </colgroup>
             <thead>
               <tr>
                 <th>邮箱</th>
@@ -332,21 +344,21 @@ export default function AliasesPage() {
                   <td>
                     <button
                       type="button"
-                      className="link-like"
+                      className="link-like cell-ellipsis"
                       onClick={() => void copyEmail(alias.email)}
-                      title="复制邮箱"
+                      title={`复制邮箱：${alias.email}`}
                     >
                       {alias.email}
                     </button>
                   </td>
-                  <td>{alias.label || '—'}</td>
+                  <td><span className="cell-ellipsis" title={alias.label || undefined}>{alias.label || '—'}</span></td>
                   <td>
                     <span className={alias.active ? 'badge badge-active' : 'badge badge-neutral'}>
                       {alias.active ? <IconCheck size={12} /> : <IconClock size={12} />}
                       {alias.active ? '已启用' : '已停用'}
                     </span>
                   </td>
-                  <td>{formatDate(alias.createdAt)}</td>
+                  <td className="date-cell">{formatDate(alias.createdAt)}</td>
                   <td>
                     <div className="row-actions">
                       {alias.active ? (
@@ -427,4 +439,3 @@ export default function AliasesPage() {
     </section>
   )
 }
-

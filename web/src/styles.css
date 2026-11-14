@@ -560,6 +560,16 @@ td .cell-secondary {
   font-size: var(--text-sm);
 }
 
+.alert-info strong,
+.alert-info .alert-detail {
+  display: block;
+}
+
+.alert-info .alert-detail {
+  margin-top: 3px;
+  color: var(--color-text-secondary);
+}
+
 /* ─── Toast ─── */
 .toast-region {
   position: fixed;
@@ -776,6 +786,17 @@ td .cell-secondary {
   color: var(--color-primary);
 }
 
+.row-actions .credential-action.configured {
+  border-color: color-mix(in srgb, var(--color-success) 40%, var(--color-border));
+  background: var(--color-success-soft);
+  color: var(--color-success);
+}
+
+.row-actions .credential-action.configured:hover:not(:disabled) {
+  border-color: var(--color-success);
+  background: color-mix(in srgb, var(--color-success-soft) 82%, var(--color-bg-raised));
+}
+
 /* ─── 登录页 ─── */
 .login-page {
   min-height: 100vh;
@@ -875,6 +896,12 @@ td .cell-secondary {
   background: var(--color-bg-subtle);
 }
 
+.mail-body a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+
 /* 减少动效偏好 */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -896,4 +923,88 @@ td .cell-secondary {
   clip: rect(0 0 0 0);
   white-space: nowrap;
   border: 0;
+}
+
+.api-settings-card { margin-bottom: 16px; }
+.alias-batch-card { margin-bottom: var(--space-5); }
+.alias-batch-header { display: flex; justify-content: space-between; align-items: center; gap: var(--space-4); flex-wrap: wrap; }
+.alias-batch-header h3 { margin: 0; }
+.alias-batch-header p { margin-bottom: 0; }
+.alias-batch-header button { display: inline-flex; align-items: center; gap: var(--space-2); }
+.alias-batch-actions { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.alias-batch-progress { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-4); overflow-wrap: anywhere; }
+.alias-batch-progress progress { width: 100%; height: 10px; accent-color: var(--color-primary); }
+.api-settings-card h3 { margin-bottom: 14px; }
+.api-settings-card .hint { margin-top: 12px; }
+.api-code { overflow-x: auto; padding: 16px; line-height: 1.7; max-width: 100%; }
+
+/* 别名与收件箱：紧凑工具栏、固定列宽、单行记录。窄屏仅表格横向滚动。 */
+.list-header-actions,
+.list-toolbar,
+.toolbar-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.list-header-actions { flex-wrap: wrap; }
+.list-header-actions select { width: auto; max-width: 240px; }
+.list-header-actions button { display: inline-flex; align-items: center; gap: var(--space-2); }
+.list-header-actions label,
+.toolbar-field label { margin: 0; flex-shrink: 0; white-space: nowrap; }
+.list-toolbar { margin-bottom: var(--space-4); flex-wrap: wrap; gap: var(--space-4); }
+.list-toolbar button { flex-shrink: 0; white-space: nowrap; }
+.toolbar-field select { width: auto; min-width: 80px; }
+.toolbar-search { flex: 1; }
+.search-input-wrap { position: relative; flex: 1; min-width: 0; }
+.inbox-toolbar { padding: var(--space-4); }
+.inbox-account-field { flex: 1; min-width: 160px; }
+.inbox-alias-field { flex: 1.5; min-width: 220px; }
+.inbox-account-field select,
+.inbox-alias-field select { flex: 1; min-width: 0; width: 0; text-overflow: ellipsis; }
+
+.alias-batch-card { padding: var(--space-4); margin-bottom: var(--space-4); }
+.alias-batch-header > div:first-child { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.alias-batch-header h3 { font-size: var(--text-base); white-space: nowrap; }
+.alias-batch-header p { margin: 0; }
+.alias-batch-actions button { white-space: nowrap; }
+.alias-batch-progress { flex-direction: row; flex-wrap: wrap; align-items: center; column-gap: var(--space-4); font-size: var(--text-sm); }
+.alias-batch-progress progress { flex-basis: 100%; }
+
+.compact-table { table-layout: fixed; }
+.compact-table th { position: relative; }
+.compact-table th,
+.compact-table td { padding: 10px 12px; white-space: nowrap; }
+.compact-table td { height: 52px; font-size: var(--text-sm); }
+.compact-table .cell-ellipsis { display: block; width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.compact-table .date-cell { color: var(--color-text-secondary); font-variant-numeric: tabular-nums; font-size: var(--text-xs); }
+.compact-table .status-column { width: 100px; }
+.compact-table .date-column { width: 160px; }
+.aliases-table { min-width: 940px; }
+.aliases-table .alias-email-column { width: 28%; }
+.aliases-table .alias-actions-column { width: 236px; }
+.aliases-table .row-actions { flex-wrap: nowrap; gap: 6px; }
+.aliases-table .row-actions button,
+.aliases-table .row-actions a { padding: 4px 10px; flex-shrink: 0; white-space: nowrap; }
+.inbox-table { min-width: 960px; }
+.inbox-table .mail-address-column { width: 22%; }
+.inbox-table .mail-actions-column { width: 56px; }
+.mail-row { cursor: pointer; }
+.mail-row:hover,
+.mail-row:focus-within { background: var(--color-primary-soft); }
+.mail-row .link-button { min-height: 32px; font-weight: 500; }
+.mail-delete-button { margin: 0; min-height: 32px; width: 32px; color: var(--color-text-tertiary); }
+.mail-delete-button:hover:not(:disabled) { background: var(--color-danger-soft); color: var(--color-danger); }
+
+@media (max-width: 680px) {
+  .app-shell header { flex-wrap: wrap; }
+  .app-shell nav { order: 3; width: 100%; overflow-x: auto; }
+  .app-shell nav a { white-space: nowrap; flex-shrink: 0; }
+  .list-header-actions { width: 100%; }
+  .list-header-actions select { flex: 1; min-width: 0; max-width: none; width: 0; }
+  .list-toolbar { gap: var(--space-3); }
+  .toolbar-search { min-width: 180px; }
+  .inbox-account-field,
+  .inbox-alias-field { flex-basis: 100%; }
 }

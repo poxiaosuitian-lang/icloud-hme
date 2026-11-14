@@ -11,6 +11,13 @@ interface DialogProps {
 export default function Dialog({ title, open, onClose, children }: DialogProps) {
   const ref = useRef<HTMLDivElement>(null)
   const lastFocused = useRef<Element | null>(null)
+  const onCloseRef = useRef(onClose)
+
+  // 表单输入会让父组件重新渲染，而调用方通常会传入一个新的内联函数。
+  // 始终保留最新回调，但不要因此重新执行下面的焦点初始化逻辑。
+  useEffect(() => {
+    onCloseRef.current = onClose
+  }, [onClose])
 
   useEffect(() => {
     if (!open) return
@@ -27,7 +34,7 @@ export default function Dialog({ title, open, onClose, children }: DialogProps) 
 
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onClose()
+        onCloseRef.current()
         return
       }
       if (e.key !== 'Tab') return
@@ -50,7 +57,7 @@ export default function Dialog({ title, open, onClose, children }: DialogProps) 
         lastFocused.current.focus()
       }
     }
-  }, [open, onClose])
+  }, [open])
 
   if (!open) return null
 

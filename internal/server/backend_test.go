@@ -130,11 +130,11 @@ func (f *fakeBackend) ListInbox(q InboxQuery) (InboxResult, error) {
 	return f.inbox, nil
 }
 
-func (f *fakeBackend) GetMessage(accountID string, uid uint32) (*mail.FullMessage, error) {
+func (f *fakeBackend) GetMessage(accountID string, uid string) (*mail.FullMessage, error) {
 	return &mail.FullMessage{Message: mail.Message{ID: fmt.Sprint(uid)}}, nil
 }
 
-func (f *fakeBackend) DeleteMessage(accountID string, uid uint32) error { return nil }
+func (f *fakeBackend) DeleteMessage(accountID string, uid string) error { return nil }
 
 func (f *fakeBackend) Reload() error {
 	f.reloadCount++
@@ -156,7 +156,7 @@ func newTestServer(f *fakeBackend) (*Server, *httptest.Server) {
 // login 登录测试服务并返回 session Cookie 与 CSRF。
 func login(t *testing.T, ts *httptest.Server, password string) (sessionCookie, csrf string) {
 	t.Helper()
-	body := fmt.Sprintf(`{"password":%q}`, password)
+	body := fmt.Sprintf(`{"username":"admin","password":%q}`, password)
 	req, _ := http.NewRequest("POST", ts.URL+"/api/auth/login", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -210,4 +210,40 @@ func do(t *testing.T, req *http.Request) (int, string, []*http.Cookie) {
 		t.Fatal(err)
 	}
 	return resp.StatusCode, string(raw), resp.Cookies()
+}
+
+func TestClassifyLoginErrInvalidCredentials(t *testing.T) {
+	err := classifyLoginErr(fmt.Errorf("auth complete: 用户名或密码错误"))
+	if err.Status != http.StatusUnauthorized || err.Code != "ICLOUD_INVALID_CREDENTIALS" || err.Message != "iCloud 账号或密码错误" {
+		t.Fatalf("错误映射不正确: %+v", err)
+	}
+}
+
+func TestClassifyFreshLoginRejectionNotExpiredCookie(t *testing.T) {
+	for _, status := range []int{401, 403} {
+		err := classifyLoginErr(fmt.Errorf("auth complete: %w", &hme.LoginRejectedError{Status: status}))
+		if err.Code != "ICLOUD_LOGIN_REJECTED" || err.Status != http.StatusUnauthorized {
+			t.Fatalf("incorrect fresh login classification: %+v", err)
+		}
+		if strings.Contains(err.Message, "会话失效") || strings.Contains(err.Message, "请更新 Cookie") {
+			t.Fatalf("misleading expired Cookie advice: %s", err.Message)
+		}
+	}
+}
+
+func TestClassifyLoginErrOTP(t *testing.T) {
+	tests := []struct {
+		err  error
+		code string
+	}{
+		{fmt.Errorf("账号启用了双重认证,需要提供 OTP"), "OTP_REQUIRED"},
+		{fmt.Errorf("OTP 验证会话已失效,请重新输入密码"), "OTP_SESSION_EXPIRED"},
+		{fmt.Errorf("2FA 验证失败: HTTP 401"), "OTP_INVALID"},
+	}
+	for _, tc := range tests {
+		got := classifyLoginErr(tc.err)
+		if got.Code != tc.code {
+			t.Errorf("err=%v: got %s want %s", tc.err, got.Code, tc.code)
+		}
+	}
 }

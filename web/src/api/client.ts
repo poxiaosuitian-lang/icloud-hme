@@ -38,7 +38,8 @@ interface RequestOptions extends Omit<RequestInit, 'body'> {
  * 唯一的 fetch 入口。
  *
  * 统一设置 Accept、JSON Content-Type 与 credentials: same-origin;
- * 非 GET/HEAD/OPTIONS 自动携带 X-CSRF-Token;401 触发 onUnauthorized 回调。
+ * 非 GET/HEAD/OPTIONS 自动携带 X-CSRF-Token；仅管理员会话失效
+ * (401/AUTH_REQUIRED) 时触发 onUnauthorized 回调。
  */
 export async function request<T>(
   path: string,
@@ -71,16 +72,18 @@ export async function request<T>(
     throw new ApiError(0, 'NETWORK_ERROR', '网络连接失败，请检查服务状态')
   }
 
-  if (resp.status === 401) {
-    onUnauthorized?.()
-    unauthorizedHandler?.()
-  }
-
   let payload: ApiResponse<T>
   try {
     payload = (await resp.json()) as ApiResponse<T>
   } catch {
     throw new ApiError(resp.status, 'INVALID_RESPONSE', '网络连接失败，请检查服务状态')
+  }
+
+  // 账号上游登录也会使用 401（如 OTP_INVALID、UPSTREAM_UNAUTHORIZED）。
+  // 这些错误只应显示在当前对话框，不能误判为管理台会话失效并踢回登录页。
+  if (resp.status === 401 && payload.code === 'AUTH_REQUIRED') {
+    onUnauthorized?.()
+    unauthorizedHandler?.()
   }
 
   if (!resp.ok || payload.success === false) {

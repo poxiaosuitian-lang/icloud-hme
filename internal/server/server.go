@@ -12,6 +12,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"net/http"
@@ -22,47 +23,84 @@ import (
 	"github.com/gin-gonic/gin"
 	"icloud-hme/internal/account"
 	"icloud-hme/internal/auth"
+	"icloud-hme/internal/mail"
 	"icloud-hme/internal/webui"
 )
 
 // Config 是 Server 的启动配置。
 type Config struct {
-	Debug         bool
-	AdminPassword string
-	SessionTTL    time.Duration
-	SecureCookie  bool
+	Debug            bool
+	AdminUsername    string
+	AdminPassword    string
+	SessionTTL       time.Duration
+	SecureCookie     bool
+	APIToken         string
+	APISettingsFile  string
+	AliasUsageFile   string
+	DualScheduleFile string
 }
 
 // Server 封装 Gin 引擎、账号后端与认证。
 type Server struct {
-	be      Backend
-	auth    *auth.Manager
-	limiter *auth.Limiter
-	cfg     Config
-	r       *gin.Engine
+	be           Backend
+	auth         *auth.Manager
+	limiter      *auth.Limiter
+	cfg          Config
+	r            *gin.Engine
+	apiSettings  *apiSettingsStore
+	aliasBatches *aliasBatchManager
+	aliasUsage   *aliasUsageStore
 }
 
 // New 创建 Server。mgr 为账号管理器,cfg 为安全配置。
 func New(mgr *account.Manager, cfg Config) (*Server, error) {
+	settings, err := loadAPISettings(cfg.APISettingsFile, cfg.APIToken)
+	if err != nil {
+		return nil, err
+	}
+	usage, err := loadAliasUsage(cfg.AliasUsageFile)
+	if err != nil {
+		return nil, err
+	}
+	cfg.APIToken = settings.Token
+	if cfg.APIToken != "" && (len(cfg.APIToken) < 32 || strings.ContainsAny(cfg.APIToken, " \t\r\n")) {
+		return nil, errors.New("API Token 至少 32 字符且不含空白")
+	}
+	if strings.TrimSpace(cfg.AdminUsername) == "" {
+		return nil, errors.New("管理员账号不能为空")
+	}
 	if _, err := auth.NewManager(auth.Options{
 		Password: cfg.AdminPassword,
 		TTL:      cfg.SessionTTL,
 	}); err != nil {
 		return nil, err
 	}
-	return newWithBackend(&managerBackend{mgr: mgr}, cfg), nil
+	s := newWithBackend(&managerBackend{mgr: mgr}, cfg)
+	s.apiSettings.value = settings
+	s.aliasUsage = usage
+	if err := s.restoreDualSchedules(true); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // newWithBackend 创建 Server 并注入 Backend(测试使用内存 fake)。
 func newWithBackend(be Backend, cfg Config) *Server {
+	if cfg.AdminUsername == "" {
+		cfg.AdminUsername = "admin"
+	}
 	if !cfg.Debug {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	s := &Server{
-		be:      be,
-		limiter: auth.NewLimiter(nil, 15*time.Minute, 5, 10000),
-		cfg:     cfg,
+		be:           be,
+		limiter:      auth.NewLimiter(nil, 15*time.Minute, 5, 10000),
+		cfg:          cfg,
+		apiSettings:  &apiSettingsStore{path: cfg.APISettingsFile, value: apiSettings{Token: cfg.APIToken, Enabled: cfg.APIToken != ""}},
+		aliasBatches: newAliasBatchManager(),
+		aliasUsage:   &aliasUsageStore{path: cfg.AliasUsageFile, claims: make(map[string]aliasAllocation)},
 	}
+	s.aliasBatches.dualPath = cfg.DualScheduleFile
 	s.auth, _ = auth.NewManager(auth.Options{
 		Password: cfg.AdminPassword,
 		TTL:      cfg.SessionTTL,
@@ -86,6 +124,7 @@ func (s *Server) Handler() http.Handler { return s.r }
 func (s *Server) register() {
 	api := s.r.Group("/api")
 	api.Use(apiCacheControlMiddleware())
+	s.registerServiceAPI(api)
 	{
 		// ===== 认证(公开) =====
 		api.POST("/auth/login", s.handleLogin)
@@ -95,6 +134,11 @@ func (s *Server) register() {
 		authed := api.Group("")
 		authed.Use(requireSession(s.auth))
 		{
+			authed.GET("/settings/api", s.getAPISettings)
+			authed.GET("/settings/api/usage", s.aliasUsageHandler)
+			authed.PUT("/settings/api", csrfCheck(s.auth), s.updateAPISettings)
+			authed.POST("/settings/api/token", csrfCheck(s.auth), s.revealAPIToken)
+			authed.POST("/settings/api/rotate", csrfCheck(s.auth), s.rotateAPIToken)
 			authed.POST("/auth/logout", csrfCheck(s.auth), s.handleLogout)
 
 			// ===== 账号管理 =====
@@ -106,10 +150,14 @@ func (s *Server) register() {
 			authed.POST("/accounts/:id/password", csrfCheck(s.auth), s.setAppPasswordHandler)
 			authed.PUT("/accounts/:id/mailbox", csrfCheck(s.auth), s.setMailboxHandler)
 			authed.POST("/accounts/:id/login", csrfCheck(s.auth), s.loginAccountHandler)
+			authed.POST("/accounts/:id/apple-login", csrfCheck(s.auth), s.loginAppleAccountHandler)
 			authed.DELETE("/accounts/:id", csrfCheck(s.auth), s.removeAccountHandler)
 
 			// ===== 核心接口 1: 创建邮箱 =====
 			authed.POST("/create", csrfCheck(s.auth), s.createAliasHandler)
+			authed.GET("/alias-batch", s.getAliasBatchHandler)
+			authed.POST("/alias-batch", csrfCheck(s.auth), s.startAliasBatchHandler)
+			authed.POST("/alias-batch/stop", csrfCheck(s.auth), s.stopAliasBatchHandler)
 
 			// ===== 核心接口 2: 读取邮件 =====
 			authed.GET("/inbox", s.listInboxHandler)
@@ -173,7 +221,7 @@ func (s *Server) createAliasHandler(c *gin.Context) {
 		return
 	}
 
-	result, err := s.be.CreateAlias(req.AccountID, req.Label)
+	result, _, err := s.createAliasWithinLimit(context.Background(), req.AccountID, req.Label)
 	if err != nil {
 		backendFail(c, err)
 		return
@@ -229,12 +277,13 @@ func (s *Server) listInboxHandler(c *gin.Context) {
 
 func (s *Server) getMessageHandler(c *gin.Context) {
 	accountID := c.Query("account_id")
-	uid, err := strconv.ParseUint(c.Param("message_id"), 10, 32)
+	id := c.Param("message_id")
+	_, _, err := mail.ParseMessageID(id)
 	if accountID == "" || err != nil {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "account_id 或邮件 ID 无效")
 		return
 	}
-	message, err := s.be.GetMessage(accountID, uint32(uid))
+	message, err := s.be.GetMessage(accountID, id)
 	if err != nil {
 		backendFail(c, err)
 		return
@@ -244,12 +293,13 @@ func (s *Server) getMessageHandler(c *gin.Context) {
 
 func (s *Server) deleteMessageHandler(c *gin.Context) {
 	accountID := c.Query("account_id")
-	uid, err := strconv.ParseUint(c.Param("message_id"), 10, 32)
+	id := c.Param("message_id")
+	_, _, err := mail.ParseMessageID(id)
 	if accountID == "" || err != nil {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "account_id 或邮件 ID 无效")
 		return
 	}
-	if err := s.be.DeleteMessage(accountID, uint32(uid)); err != nil {
+	if err := s.be.DeleteMessage(accountID, id); err != nil {
 		backendFail(c, err)
 		return
 	}

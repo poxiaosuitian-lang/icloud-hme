@@ -1,0 +1,9 @@
+.git
+.gitignore
+.env
+data
+logs
+web/node_modules
+internal/webui/dist
+icloud-hme
+*.log

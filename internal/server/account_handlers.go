@@ -187,8 +187,8 @@ type loginAccountReq struct {
 func (s *Server) loginAccountHandler(c *gin.Context) {
 	id := c.Param("id")
 	var req loginAccountReq
-	if err := c.ShouldBindJSON(&req); err != nil || req.Password == "" {
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数错误: password 必填")
+	if err := c.ShouldBindJSON(&req); err != nil || (req.Password == "" && req.OTPCode == "") {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数错误: password 或 otp_code 必填")
 		return
 	}
 	sum, err := s.be.LoginAccount(id, req.Password, req.OTPCode)

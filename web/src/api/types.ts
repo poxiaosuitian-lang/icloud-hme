@@ -20,6 +20,7 @@ export interface AccountSummary {
   status: 'active' | 'pending' | 'error' | string
   alias_total: number
   alias_active: number
+  has_apple_session?: boolean
   has_cookies: boolean
   has_app_password: boolean
   has_proxy: boolean
@@ -45,9 +46,37 @@ export interface Alias {
   createdAt?: string
 }
 
+export type CreationChannel = 'icloud_web' | 'apple_account' | 'auto'
+export interface AliasBatchStatus {
+  policy?: string
+  schedule_mode?: 'dual' | 'web_only' | 'offline'
+  schedule_slot?: number
+  channel?: CreationChannel
+  channels?: { channel: string; created: number; disabled: boolean; next_run_at?: string; message?: string; error_code?: string }[]
+  id: string
+  account_id: string
+  status: 'running' | 'cooling_down' | 'stopping' | 'completed' | 'stopped' | 'failed' | 'limit_reached'
+  count: number
+  created: number
+  interval_seconds: number
+  label_prefix: string
+  alias_total: number
+  max_aliases: number
+  last_email?: string
+  error_code?: string
+  message?: string
+  started_at: string
+  finished_at?: string
+  next_run_at?: string
+  cooldown_count?: number
+  cooldown_minutes?: number
+  batch_size?: number
+}
+
 /** 邮件摘要 */
 export interface InboxMessage {
   id: string
+  folder?: 'INBOX' | 'Junk'
   from: string
   to: string
   subject: string

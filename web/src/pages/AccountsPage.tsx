@@ -46,7 +46,7 @@ function StatusBadge({ status }: { status: string }) {
 function credText(acc: AccountSummary): string {
   const parts: string[] = []
   if (acc.has_cookies) parts.push('Cookie')
-  if (acc.has_app_password) parts.push('App密码')
+  if (acc.has_app_password) parts.push('App 密码')
   if (acc.mailbox) parts.push(`收件箱:${acc.mailbox.email}`)
   if (acc.has_proxy) parts.push('代理')
   return parts.length > 0 ? `已配置（${parts.join('·')}）` : '未配置'
@@ -62,6 +62,7 @@ export default function AccountsPage() {
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState<AccountSummary | null>(null)
   const [cookieFor, setCookieFor] = useState<AccountSummary | null>(null)
+  const [appleLoginFor, setAppleLoginFor] = useState<AccountSummary | null>(null)
   const [loginFor, setLoginFor] = useState<AccountSummary | null>(null)
   const [appPwdFor, setAppPwdFor] = useState<AccountSummary | null>(null)
   const [proxyFor, setProxyFor] = useState<AccountSummary | null>(null)
@@ -195,11 +196,25 @@ export default function AccountsPage() {
                         编辑
                       </button>
                       <button onClick={() => setCookieFor(acc)}>更新 Cookie</button>
-                      <button onClick={() => setLoginFor(acc)}>
-                        <IconKey size={14} />
-                        iCloud 登录
+                      <button
+                        className={acc.has_cookies ? 'credential-action configured' : 'credential-action'}
+                        title={acc.has_cookies ? '当前已登录；点击可重新登录并刷新 Cookie' : '使用 Apple 账户密码登录'}
+                        onClick={() => setLoginFor(acc)}
+                      >
+                        {acc.has_cookies ? <IconCheck size={14} /> : <IconKey size={14} />}
+                        {acc.has_cookies ? 'iCloud 已登录' : 'iCloud 登录'}
                       </button>
-                      <button onClick={() => setAppPwdFor(acc)}>设置 App 密码</button>
+                      <button
+                        className={acc.has_app_password ? 'credential-action configured' : 'credential-action'}
+                        title={acc.has_app_password ? '当前已设置；点击可更新 App 专用密码' : '设置用于 IMAP 收件的 App 专用密码'}
+                        onClick={() => setAppPwdFor(acc)}
+                      >
+                        {acc.has_app_password && <IconCheck size={14} />}
+                        {acc.has_app_password ? 'App 密码已设置' : '设置 App 密码'}
+                      </button>
+                      <button onClick={() => setAppleLoginFor(acc)} className={acc.has_apple_session ? 'credential-action configured' : 'credential-action'}>
+                        {acc.has_apple_session ? '新通道会话已保存' : '登录新通道'}
+                      </button>
                       <button onClick={() => setMailboxFor(acc)}>接入收件邮箱</button>
                       <button onClick={() => setProxyFor(acc)}>设置代理</button>
                       <Link to={`/aliases?account_id=${acc.id}`}>别名</Link>
@@ -241,12 +256,22 @@ export default function AccountsPage() {
           }}
         />
       )}
+      {appleLoginFor && (
+        <ICloudLoginDialog accountId={appleLoginFor.id} channel="apple_account"
+          loginEmail={appleLoginFor.icloud_email?.trim() || appleLoginFor.real_email?.trim()}
+          configured={appleLoginFor.has_apple_session} open
+          onClose={() => setAppleLoginFor(null)}
+          onSaved={() => { setAppleLoginFor(null); void load() }} />
+      )}
       {loginFor && (
         <ICloudLoginDialog
           accountId={loginFor.id}
+          loginEmail={loginFor.icloud_email?.trim() || loginFor.real_email?.trim()}
+          configured={loginFor.has_cookies}
           open
           onClose={() => setLoginFor(null)}
           onSaved={() => {
+            setLoginFor(null)
             show('登录成功')
             void load()
           }}
@@ -255,9 +280,12 @@ export default function AccountsPage() {
       {appPwdFor && (
         <AppPasswordDialog
           accountId={appPwdFor.id}
+          configured={appPwdFor.has_app_password}
+          initialEmail={appPwdFor.icloud_email}
           open
           onClose={() => setAppPwdFor(null)}
           onSaved={() => {
+            setAppPwdFor(null)
             show('App 专用密码已设置')
             void load()
           }}

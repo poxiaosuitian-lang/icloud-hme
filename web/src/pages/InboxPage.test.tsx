@@ -1,5 +1,5 @@
 import { http, HttpResponse } from 'msw'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it } from 'vitest'
@@ -65,6 +65,46 @@ describe('InboxPage', () => {
   beforeEach(() => {
     setCSRFToken('csrf-test')
     server.resetHandlers()
+  })
+
+  it('合并垃圾邮件时显示来源，并用带文件夹的 ID 请求详情', async () => {
+    const junk = { ...inboxResult.messages[0], id: 'Junk:1', folder: 'Junk', subject: '垃圾箱验证码' }
+    let detailID = ''
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.get('/api/inbox', () => HttpResponse.json({ success: true, data: {
+        ...inboxResult, count: 2, messages: [inboxResult.messages[0], junk],
+      } })),
+      http.get('/api/inbox/:id', ({ params }) => {
+        detailID = String(params.id)
+        return HttpResponse.json({ success: true, data: { ...junk, body: '测试正文', content_type: 'text/plain' } })
+      }),
+    )
+    renderPage()
+    expect(await screen.findByText('垃圾邮件')).toBeInTheDocument()
+    expect(screen.getByText('主题一')).toBeInTheDocument()
+    await userEvent.setup().click(screen.getByRole('button', { name: '垃圾箱验证码' }))
+    expect(await screen.findByText('测试正文')).toBeInTheDocument()
+    expect(detailID).toBe('Junk:1')
+    expect(screen.getByText('来源：垃圾邮件')).toBeInTheDocument()
+  })
+
+  it('打开邮件详情后正文中的链接可点击，并在新标签页打开', async () => {
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.get('/api/inbox', () => HttpResponse.json({ success: true, data: inboxResult })),
+      http.get('/api/inbox/:id', () => HttpResponse.json({ success: true, data: {
+        ...inboxResult.messages[0],
+        body: '点击验证 (https://example.com/verify?token=abc&next=%2Fhome)。',
+        content_type: 'text/plain',
+      } })),
+    )
+    renderPage()
+    await userEvent.setup().click(await screen.findByRole('button', { name: '主题一' }))
+    const link = await screen.findByRole('link', { name: 'https://example.com/verify?token=abc&next=%2Fhome' })
+    expect(link).toHaveAttribute('href', 'https://example.com/verify?token=abc&next=%2Fhome')
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer')
   })
 
   it('账号必选;alias 可空;limit/days 生效;query 经 URLSearchParams', async () => {
@@ -156,6 +196,21 @@ describe('InboxPage', () => {
     )
     renderPage()
     expect(await screen.findByText(/暂无邮件/)).toBeInTheDocument()
+  })
+
+  it('兼容空收件箱返回 messages=null，不出现空白页', async () => {
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.get('/api/inbox', () =>
+        HttpResponse.json({
+          success: true,
+          data: { account_id: 'acc_1', count: 0, messages: null, method: 'imap' },
+        }),
+      ),
+    )
+    renderPage('/inbox?account_id=acc_1&alias=alpha%40icloud.com')
+    expect(await screen.findByText(/暂无邮件/)).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '收件箱' })).toBeInTheDocument()
   })
 
   it('恶意 HTML 只作为文本显示,不产生 img 节点', async () => {
@@ -255,20 +310,82 @@ describe('InboxPage', () => {
     expect(await screen.findByText(/（无主题）/)).toBeInTheDocument()
   })
 
-  it('空摘要显示占位符', async () => {
+  it('列表不显示摘要，点击收件人单元格才请求并展示详情', async () => {
+    let detailCalls = 0
     server.use(
       http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
-      http.get('/api/inbox', () =>
-        HttpResponse.json({
-          success: true,
-          data: {
-            ...inboxResult,
-            messages: [{ ...inboxResult.messages[0], preview: '' }],
-          },
-        }),
-      ),
+      http.get('/api/inbox', () => HttpResponse.json({ success: true, data: inboxResult })),
+      http.get('/api/inbox/:id', () => {
+        detailCalls++
+        return HttpResponse.json({ success: true, data: { ...inboxResult.messages[0], body: '完整邮件内容', content_type: 'text/plain' } })
+      }),
     )
     renderPage()
-    expect(await screen.findByText('—')).toBeInTheDocument()
+    const row = (await screen.findByText('主题一')).closest('tr')!
+    expect(screen.queryByRole('columnheader', { name: '摘要' })).not.toBeInTheDocument()
+    expect(screen.queryByText('预览内容')).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(detailCalls).toBe(0)
+    await userEvent.setup().click(within(row).getByText('alpha@icloud.com'))
+    expect(await screen.findByText('完整邮件内容')).toBeInTheDocument()
+    expect(detailCalls).toBe(1)
+    expect(screen.getByRole('dialog')).toHaveTextContent('发件人：sender@example.com')
+  })
+
+  it('点击行内删除按钮只打开确认框，不加载邮件详情或直接删除', async () => {
+    let detailCalls = 0
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.get('/api/inbox', () => HttpResponse.json({ success: true, data: inboxResult })),
+      http.get('/api/inbox/:id', () => {
+        detailCalls++
+        return HttpResponse.json({ success: true, data: { ...inboxResult.messages[0], body: '完整邮件内容' } })
+      }),
+    )
+    renderPage()
+    await userEvent.setup().click(await screen.findByRole('button', { name: '删除邮件' }))
+    expect(screen.getByRole('dialog', { name: '删除邮件' })).toBeInTheDocument()
+    expect(detailCalls).toBe(0)
+    expect(screen.queryByText('完整邮件内容')).not.toBeInTheDocument()
+  })
+
+  it('键盘可以通过主题按钮打开邮件，且只请求一次', async () => {
+    let detailCalls = 0
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.get('/api/inbox', () => HttpResponse.json({ success: true, data: inboxResult })),
+      http.get('/api/inbox/:id', () => {
+        detailCalls++
+        return HttpResponse.json({ success: true, data: { ...inboxResult.messages[0], body: '键盘打开正文' } })
+      }),
+    )
+    renderPage()
+    const subject = await screen.findByRole('button', { name: '主题一' })
+    subject.focus()
+    await userEvent.setup().keyboard('{Enter}')
+    expect(await screen.findByText('键盘打开正文')).toBeInTheDocument()
+    expect(detailCalls).toBe(1)
+  })
+
+  it('读取详情时关闭对话框，迟到响应不会重新打开', async () => {
+    let release: (() => void) | undefined
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.get('/api/inbox', () => HttpResponse.json({ success: true, data: inboxResult })),
+      http.get('/api/inbox/:id', () => new Promise<Response>((resolve) => {
+        release = () => resolve(HttpResponse.json({ success: true, data: { ...inboxResult.messages[0], body: '迟到正文' } }))
+      })),
+    )
+    renderPage()
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: '主题一' }))
+    expect(await screen.findByText('读取中…')).toBeInTheDocument()
+    await waitFor(() => expect(release).toBeDefined())
+    await user.click(screen.getByRole('button', { name: '关闭' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    release?.()
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByText('迟到正文')).not.toBeInTheDocument()
   })
 })

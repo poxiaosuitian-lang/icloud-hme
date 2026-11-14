@@ -4,6 +4,8 @@ import { request, ApiError } from '../api/client'
 
 interface AppPasswordDialogProps {
   accountId: string
+  configured?: boolean
+  initialEmail?: string
   open: boolean
   onClose: () => void
   onSaved: () => void
@@ -12,11 +14,13 @@ interface AppPasswordDialogProps {
 /** 设置 App 专用密码对话框:提交后清空 */
 export default function AppPasswordDialog({
   accountId,
+  configured = false,
+  initialEmail = '',
   open,
   onClose,
   onSaved,
 }: AppPasswordDialogProps) {
-  const [email, setEmail] = useState('')
+  const [email, setEmail] = useState(initialEmail)
   const [appPassword, setAppPassword] = useState('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -34,7 +38,6 @@ export default function AppPasswordDialog({
         method: 'POST',
         body: JSON.stringify({ icloud_email: email, app_password: appPassword }),
       })
-      setEmail('')
       setAppPassword('')
       onSaved()
     } catch (err) {
@@ -46,10 +49,10 @@ export default function AppPasswordDialog({
 
   return (
     <Dialog
-      title="设置 App 专用密码"
+      title={configured ? 'App 专用密码状态' : '设置 App 专用密码'}
       open={open}
       onClose={() => {
-        setEmail('')
+        setEmail(initialEmail)
         setAppPassword('')
         setError('')
         onClose()
@@ -58,6 +61,12 @@ export default function AppPasswordDialog({
       {error && (
         <div className="alert-error" role="alert">
           {error}
+        </div>
+      )}
+      {configured && !error && (
+        <div className="alert-info">
+          <strong>已完成 App 专用密码设置</strong>
+          <span className="alert-detail">出于安全原因不会回显密码；如需更换，请在下方输入新的密码。</span>
         </div>
       )}
       <div className="form-field">
@@ -82,7 +91,7 @@ export default function AppPasswordDialog({
       <div className="form-actions">
         <button onClick={onClose}>取消</button>
         <button className="primary" onClick={() => void handleSubmit()} disabled={submitting}>
-          {submitting ? '保存中…' : '保存'}
+          {submitting ? '保存中…' : configured ? '更新密码' : '保存'}
         </button>
       </div>
     </Dialog>

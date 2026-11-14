@@ -13,39 +13,41 @@ import (
 
 // Summary 是账号的安全公开表示,不含任何秘密字段。
 type Summary struct {
-	ID             string          `json:"id"`
-	Name           string          `json:"name"`
-	RealEmail      string          `json:"real_email"`
-	ICloudEmail    string          `json:"icloud_email"`
-	Host           string          `json:"host"`
-	Status         string          `json:"status"`
-	AliasTotal     int             `json:"alias_total"`
-	AliasActive    int             `json:"alias_active"`
-	HasCookies     bool            `json:"has_cookies"`
-	HasAppPassword bool            `json:"has_app_password"`
-	HasProxy       bool            `json:"has_proxy"`
-	Mailbox        *MailboxSummary `json:"mailbox,omitempty"`
-	LastValidated  string          `json:"last_validated"`
-	StatusMessage  string          `json:"status_message,omitempty"`
-	CreatedAt      string          `json:"created_at"`
+	HasAppleSession bool            `json:"has_apple_session"`
+	ID              string          `json:"id"`
+	Name            string          `json:"name"`
+	RealEmail       string          `json:"real_email"`
+	ICloudEmail     string          `json:"icloud_email"`
+	Host            string          `json:"host"`
+	Status          string          `json:"status"`
+	AliasTotal      int             `json:"alias_total"`
+	AliasActive     int             `json:"alias_active"`
+	HasCookies      bool            `json:"has_cookies"`
+	HasAppPassword  bool            `json:"has_app_password"`
+	HasProxy        bool            `json:"has_proxy"`
+	Mailbox         *MailboxSummary `json:"mailbox,omitempty"`
+	LastValidated   string          `json:"last_validated"`
+	StatusMessage   string          `json:"status_message,omitempty"`
+	CreatedAt       string          `json:"created_at"`
 }
 
 // Summary 返回账号的安全快照,忽略内部 LastError。
 func (a *Account) Summary() Summary {
 	s := Summary{
-		ID:             a.ID,
-		Name:           a.Name,
-		RealEmail:      a.RealEmail,
-		ICloudEmail:    a.ICloudEmail,
-		Host:           a.Host,
-		Status:         a.Status,
-		AliasTotal:     a.AliasTotal,
-		AliasActive:    a.AliasActive,
-		HasCookies:     len(a.Cookies) > 0,
-		HasAppPassword: a.AppPassword != "",
-		HasProxy:       a.Proxy != "",
-		LastValidated:  a.LastValidated,
-		CreatedAt:      a.CreatedAt,
+		ID:              a.ID,
+		HasAppleSession: a.AppleSession != nil && a.AppleSession.APIKey != "" && !a.AppleSession.RefreshRejected,
+		Name:            a.Name,
+		RealEmail:       a.RealEmail,
+		ICloudEmail:     a.ICloudEmail,
+		Host:            a.Host,
+		Status:          a.Status,
+		AliasTotal:      a.AliasTotal,
+		AliasActive:     a.AliasActive,
+		HasCookies:      len(a.Cookies) > 0,
+		HasAppPassword:  a.AppPassword != "",
+		HasProxy:        a.Proxy != "",
+		LastValidated:   a.LastValidated,
+		CreatedAt:       a.CreatedAt,
 	}
 	if a.Mailbox != nil {
 		s.Mailbox = &MailboxSummary{Provider: a.Mailbox.Provider, Email: a.Mailbox.Email, IMAPHost: a.Mailbox.IMAPHost, IMAPPort: a.Mailbox.IMAPPort}

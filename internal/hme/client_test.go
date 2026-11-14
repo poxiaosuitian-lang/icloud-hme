@@ -1,9 +1,43 @@
 package hme
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"sync/atomic"
 	"testing"
 )
+
+func TestCreateAliasSingleAttemptDoesNotRetryReservation(t *testing.T) {
+	var generated, reserved atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/hme/generate":
+			generated.Add(1)
+			_, _ = w.Write([]byte(`{"success":true,"result":{"hme":"fixture@example.test"}}`))
+		case "/v1/hme/reserve":
+			reserved.Add(1)
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"success":false}`))
+		default:
+			t.Errorf("unexpected request: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+	client, err := NewClient(map[string]string{}, "icloud.com", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.serviceURL = ts.URL
+	if _, err := client.CreateAlias("fixture", 1); err == nil {
+		t.Fatal("expected reservation error")
+	}
+	if generated.Load() != 1 || reserved.Load() != 1 {
+		t.Fatalf("unexpected retry: generated=%d reserved=%d", generated.Load(), reserved.Load())
+	}
+}
 
 func TestValidationURLs(t *testing.T) {
 	tests := []struct {

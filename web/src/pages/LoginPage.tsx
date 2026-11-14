@@ -7,17 +7,18 @@ import { IconLock, IconShield } from '../components/icons'
 export default function LoginPage() {
   const { login } = useAuth()
   const navigate = useNavigate()
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
-    if (submitting || !password) return
+    if (submitting || !username || !password) return
     setSubmitting(true)
     setError('')
     try {
-      await login(password)
+      await login(username, password)
       navigate('/accounts', { replace: true })
     } catch (err) {
       setError(
@@ -43,6 +44,18 @@ export default function LoginPage() {
             {error}
           </div>
         )}
+        <div className="form-field">
+          <label htmlFor="admin-username">管理员账号</label>
+          <input
+            id="admin-username"
+            type="text"
+            autoComplete="username"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            required
+            placeholder="请输入管理员账号"
+          />
+        </div>
         <div className="form-field">
           <label htmlFor="admin-password">管理员密码</label>
           <div style={{ position: 'relative' }}>

@@ -1,0 +1,2 @@
+Source: https://github.com/t508708/icloud-mail
+Commit: 886eb52e567204d57178f66383ec87067e1d73c9

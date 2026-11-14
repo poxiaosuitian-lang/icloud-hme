@@ -5,6 +5,7 @@ import type { AccountSummary, Alias, FullMessage, InboxResult, InboxMessage } fr
 import AsyncState from '../components/AsyncState'
 import Dialog from '../components/Dialog'
 import ConfirmDialog from '../components/ConfirmDialog'
+import MailBody from '../components/MailBody'
 import { useToast } from '../components/ToastProvider'
 import { IconKey, IconMail, IconTrash } from '../components/icons'
 
@@ -39,17 +40,30 @@ export default function InboxPage() {
 
   const [searchParams, setSearchParams] = useSearchParams()
   const abortRef = useRef<AbortController | null>(null)
+  const detailAbortRef = useRef<AbortController | null>(null)
   const { show } = useToast()
 
+  useEffect(() => () => detailAbortRef.current?.abort(), [])
+
+  function closeMessage() {
+    detailAbortRef.current?.abort()
+    setDetail(null)
+    setDetailLoading(false)
+  }
+
   async function openMessage(message: InboxMessage) {
+    detailAbortRef.current?.abort()
+    const controller = new AbortController()
+    detailAbortRef.current = controller
+    setDetail(null)
     setDetailLoading(true)
     try {
-      const data = await request<FullMessage>(`/api/inbox/${encodeURIComponent(message.id)}?account_id=${encodeURIComponent(accountId)}`)
-      setDetail(data)
+      const data = await request<FullMessage>(`/api/inbox/${encodeURIComponent(message.id)}?account_id=${encodeURIComponent(accountId)}`, { signal: controller.signal })
+      if (!controller.signal.aborted) setDetail(data)
     } catch (err) {
-      show(err instanceof ApiError ? err.message : '读取邮件详情失败')
+      if (!controller.signal.aborted) show(err instanceof ApiError ? err.message : '读取邮件详情失败')
     } finally {
-      setDetailLoading(false)
+      if (!controller.signal.aborted) setDetailLoading(false)
     }
   }
 
@@ -143,7 +157,12 @@ export default function InboxPage() {
     })
       .then((data) => {
         if (cancelled) return
-        setResult(data)
+        // 兼容旧版后端曾在空收件箱返回 messages: null 的响应，避免
+        // 选择尚未收到邮件的新别名时因读取 .length 导致整个页面空白。
+        setResult({
+          ...data,
+          messages: Array.isArray(data.messages) ? data.messages : [],
+        })
         setError('')
       })
       .catch((err) => {
@@ -172,6 +191,7 @@ export default function InboxPage() {
   }
 
   function handleAccountChange(id: string) {
+    closeMessage()
     setAccountId(id)
     setAlias('')
     setResult(null)
@@ -184,14 +204,13 @@ export default function InboxPage() {
     <section>
       <div className="page-header">
         <div className="page-title">
-          <h2>收件箱摘要</h2>
-          <p>查看发往隐私别名的邮件（仅显示纯文本摘要）</p>
+          <h2>收件箱</h2>
+          <p>点击邮件所在行查看详情；IMAP 合并收件箱与垃圾邮件</p>
         </div>
       </div>
 
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
-          <div className="form-field" style={{ marginBottom: 0 }}>
+      <div className="card list-toolbar inbox-toolbar">
+          <div className="toolbar-field inbox-account-field">
             <label htmlFor="inbox-account">账号</label>
             <select
               id="inbox-account"
@@ -205,7 +224,7 @@ export default function InboxPage() {
               ))}
             </select>
           </div>
-          <div className="form-field" style={{ marginBottom: 0 }}>
+          <div className="toolbar-field inbox-alias-field">
             <label htmlFor="inbox-alias">别名</label>
             <select
               id="inbox-alias"
@@ -220,7 +239,7 @@ export default function InboxPage() {
               ))}
             </select>
           </div>
-          <div className="form-field" style={{ marginBottom: 0 }}>
+          <div className="toolbar-field">
             <label htmlFor="inbox-limit">每页</label>
             <select
               id="inbox-limit"
@@ -232,7 +251,7 @@ export default function InboxPage() {
               <option value={100}>100</option>
             </select>
           </div>
-          <div className="form-field" style={{ marginBottom: 0 }}>
+          <div className="toolbar-field">
             <label htmlFor="inbox-days">时间范围</label>
             <select
               id="inbox-days"
@@ -245,12 +264,9 @@ export default function InboxPage() {
               <option value={90}>90 天</option>
             </select>
           </div>
-          <div style={{ display: 'flex', alignItems: 'flex-end' }}>
             <button className="primary" onClick={handleSearch}>
               查询
             </button>
-          </div>
-        </div>
       </div>
 
       <AsyncState
@@ -273,24 +289,34 @@ export default function InboxPage() {
               </span>
             </p>
             <div className="table-wrap">
-              <table>
+              <table className="compact-table inbox-table">
+                <colgroup>
+                  <col />
+                  <col className="status-column" />
+                  <col className="mail-address-column" />
+                  <col className="mail-address-column" />
+                  <col className="date-column" />
+                  <col className="mail-actions-column" />
+                </colgroup>
                 <thead>
                   <tr>
                     <th>主题</th>
+                    <th>来源</th>
                     <th>发件人</th>
                     <th>收件人</th>
                     <th>日期</th>
-                    <th>摘要</th>
+                    <th><span className="visually-hidden">操作</span></th>
                   </tr>
                 </thead>
                 <tbody>
                   {result.messages.map((m) => (
-                    <tr key={m.id}>
-                      <td><button className="link-button" onClick={() => void openMessage(m)}>{m.subject || '（无主题）'}</button></td>
-                      <td>{m.from}</td>
-                      <td>{m.to}</td>
-                      <td>{formatDate(m.date)}</td>
-                      <td>{m.preview || '—'} <button className="icon-button danger" aria-label="删除邮件" title="删除邮件" onClick={() => setDeleteFor(m)}><IconTrash size={14} /></button></td>
+                    <tr key={m.id} className="mail-row" onClick={() => void openMessage(m)}>
+                      <td><button className="link-button cell-ellipsis" title={m.subject || '（无主题）'} aria-haspopup="dialog" onClick={(event) => { event.stopPropagation(); void openMessage(m) }}>{m.subject || '（无主题）'}</button></td>
+                      <td><span className={m.folder === 'Junk' ? 'badge badge-neutral' : 'badge badge-info'}>{m.folder === 'Junk' ? '垃圾邮件' : '收件箱'}</span></td>
+                      <td><span className="cell-ellipsis" title={m.from}>{m.from}</span></td>
+                      <td><span className="cell-ellipsis" title={m.to}>{m.to}</span></td>
+                      <td className="date-cell">{formatDate(m.date)}</td>
+                      <td><button className="icon-button mail-delete-button" aria-label="删除邮件" title="删除邮件" onClick={(event) => { event.stopPropagation(); setDeleteFor(m) }}><IconTrash size={14} /></button></td>
                     </tr>
                   ))}
                 </tbody>
@@ -299,17 +325,21 @@ export default function InboxPage() {
           </>
         )}
       </AsyncState>
-      <Dialog title={detail?.subject || '邮件详情'} open={detail !== null || detailLoading} onClose={() => setDetail(null)}>
+      <Dialog title={detail?.subject || '邮件详情'} open={detail !== null || detailLoading} onClose={closeMessage}>
         {detailLoading && <p className="hint">读取中…</p>}
         {detail && <>
+          <p className="hint">来源：{detail.folder === 'Junk' ? '垃圾邮件' : '收件箱'}</p>
           <p className="hint">发件人：{detail.from}</p>
           <p className="hint">收件人：{detail.to}</p>
           <p className="hint">日期：{formatDate(detail.date)}</p>
-          <pre className="mail-body">{detail.body || '无正文'}</pre>
-          <div className="form-actions"><button className="danger" onClick={() => setDeleteFor(detail)}>删除邮件</button><button onClick={() => setDetail(null)}>关闭</button></div>
+          <MailBody body={detail.body || '无正文'} />
         </>}
+        <div className="form-actions">
+          {detail && <button className="danger" onClick={() => setDeleteFor(detail)}>删除邮件</button>}
+          <button onClick={closeMessage}>关闭</button>
+        </div>
       </Dialog>
-      {deleteFor && <ConfirmDialog title="删除邮件" message="邮件将从收件箱中永久删除。" open busy={deleting} onClose={() => setDeleteFor(null)} onConfirm={() => void deleteMessage()} />}
+      {deleteFor && <ConfirmDialog title="删除邮件" message={`邮件将从${deleteFor.folder === 'Junk' ? '垃圾邮件' : '收件箱'}中永久删除。`} open busy={deleting} onClose={() => setDeleteFor(null)} onConfirm={() => void deleteMessage()} />}
     </section>
   )
 }

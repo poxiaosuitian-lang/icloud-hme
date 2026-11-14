@@ -6,8 +6,10 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"icloud-hme/internal/account"
 	"icloud-hme/internal/hme"
@@ -16,9 +18,11 @@ import (
 
 // BackendError 是后端返回的稳定错误,携带 HTTP 状态码与稳定错误码。
 type BackendError struct {
-	Status  int
-	Code    string
-	Message string
+	CreationChannel string
+	Status          int
+	Code            string
+	Message         string
+	RetryAfter      time.Duration
 }
 
 func (e *BackendError) Error() string { return e.Message }
@@ -56,8 +60,8 @@ type Backend interface {
 	SetAliasActive(string, string, bool) (bool, error)
 	DeleteAlias(string, string) error
 	ListInbox(InboxQuery) (InboxResult, error)
-	GetMessage(string, uint32) (*mail.FullMessage, error)
-	DeleteMessage(string, uint32) error
+	GetMessage(string, string) (*mail.FullMessage, error)
+	DeleteMessage(string, string) error
 	Reload() error
 }
 
@@ -151,14 +155,9 @@ func (b *managerBackend) SetMailbox(id string, config account.MailboxConfig) (ac
 
 // LoginAccount 使用 iCloud 密码登录账号,成功只返回 Summary,绝不返回 Cookies。
 func (b *managerBackend) LoginAccount(id, password, otpCode string) (account.Summary, error) {
-	var otpProvider hme.OTPProvider
-	if otpCode != "" {
-		otp := otpCode
-		otpProvider = func() (string, error) { return otp, nil }
-	}
-
-	client, err := b.mgr.HMEClientWithPassword(id, password, otpProvider)
+	client, err := b.mgr.HMEClientWithPassword(id, password, otpCode)
 	if err != nil {
+		log.Printf("iCloud 登录失败 account=%s err=%v", id, err)
 		return account.Summary{}, classifyLoginErr(err)
 	}
 	_ = client
@@ -171,12 +170,25 @@ func (b *managerBackend) LoginAccount(id, password, otpCode string) (account.Sum
 
 // classifyLoginErr 把 iCloud 登录错误映射为稳定错误。
 func classifyLoginErr(err error) *BackendError {
+	var rejected *hme.LoginRejectedError
+	if errors.As(err, &rejected) {
+		return &BackendError{Status: http.StatusUnauthorized, Code: "ICLOUD_LOGIN_REJECTED", Message: "Apple 拒绝了账号密码登录，尚未更新 Cookie。请核对下方 iCloud 登录邮箱，并使用该账号的登录密码（不是 App 专用密码）；若官网登录也失败，请先在官网完成验证。"}
+	}
 	msg := err.Error()
+	if strings.Contains(msg, "用户名或密码错误") {
+		return &BackendError{Status: http.StatusUnauthorized, Code: "ICLOUD_INVALID_CREDENTIALS", Message: "iCloud 账号或密码错误"}
+	}
 	if strings.Contains(msg, "需要提供 OTP") {
 		return &BackendError{Status: http.StatusConflict, Code: "OTP_REQUIRED", Message: "需要提供 OTP 验证码"}
 	}
+	if strings.Contains(msg, "OTP 验证会话已失效") {
+		return &BackendError{Status: http.StatusConflict, Code: "OTP_SESSION_EXPIRED", Message: "验证码会话已失效,请重新输入密码"}
+	}
 	if strings.Contains(msg, "2FA 验证失败") {
 		return &BackendError{Status: http.StatusUnauthorized, Code: "OTP_INVALID", Message: "OTP 验证码错误"}
+	}
+	if strings.Contains(msg, "Apple 网页版 iCloud 访问受限") {
+		return &BackendError{Status: http.StatusConflict, Code: "ICLOUD_WEB_ACCESS_RESTRICTED", Message: "验证码正确，但 Apple 阻止了网页版 iCloud 会话；请在 Apple 设备的 iCloud 设置中启用“在网页上访问 iCloud 数据”后重试"}
 	}
 	if strings.Contains(msg, "账号不存在") {
 		return &BackendError{Status: http.StatusNotFound, Code: "ACCOUNT_NOT_FOUND", Message: "账号不存在"}
@@ -198,7 +210,9 @@ func (b *managerBackend) CreateAlias(accountID, label string) (*hme.CreateResult
 	if err != nil {
 		return nil, mapAccountErr(err)
 	}
-	result, err := client.CreateAlias(label, 5)
+	// A failed reservation may already have succeeded upstream. Never generate
+	// another candidate automatically; the caller refreshes the count first.
+	result, err := client.CreateAlias(label, 1)
 	_ = b.mgr.SaveCookies(accountID, client.Cookies)
 	if err != nil {
 		return nil, classifyUpstreamErr("创建邮箱失败", err)
@@ -273,6 +287,11 @@ func (b *managerBackend) ListInbox(q InboxQuery) (InboxResult, error) {
 		return e
 	})
 	if poolErr == nil {
+		// JSON 中空切片必须返回 [] 而不是 null。前端会把 messages 当作列表
+		// 使用；新建别名尚无邮件时，nil 切片会导致页面读取 length 报错。
+		if imapMessages == nil {
+			imapMessages = []mail.Message{}
+		}
 		return InboxResult{
 			AccountID: q.AccountID,
 			Alias:     q.Alias,
@@ -280,6 +299,11 @@ func (b *managerBackend) ListInbox(q InboxQuery) (InboxResult, error) {
 			Messages:  imapMessages,
 			Method:    "imap",
 		}, nil
+	}
+	// A folder-read failure must not silently return a partial inbox.
+	var folderErr *mail.FolderReadError
+	if errors.As(poolErr, &folderErr) {
+		return InboxResult{}, &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "读取收件箱或垃圾邮件失败，请重试"}
 	}
 	// IMAP 失败,继续尝试 Web API
 
@@ -289,21 +313,17 @@ func (b *managerBackend) ListInbox(q InboxQuery) (InboxResult, error) {
 		return InboxResult{}, &BackendError{Status: http.StatusBadRequest, Code: "VALIDATION_ERROR", Message: "无可用邮件客户端: 需要 App Password 或 Cookie"}
 	}
 
-	if q.Alias != "" {
-		messages, err := wmc.FindByAlias(q.Alias, q.Limit)
-		if err != nil {
-			return InboxResult{}, &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "读取邮件失败"}
-		}
-		return InboxResult{AccountID: q.AccountID, Alias: q.Alias, Count: len(messages), Messages: messages, Method: "web_api"}, nil
-	}
-	messages, err := wmc.ListInbox(q.Limit)
+	messages, err := wmc.ListInboxFiltered(q.Alias, q.Limit, q.Days)
 	if err != nil {
-		return InboxResult{}, &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "读取邮件失败"}
+		return InboxResult{}, &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "读取收件箱或垃圾邮件失败，请重试"}
 	}
-	return InboxResult{AccountID: q.AccountID, Count: len(messages), Messages: messages, Method: "web_api"}, nil
+	if messages == nil {
+		messages = []mail.Message{}
+	}
+	return InboxResult{AccountID: q.AccountID, Alias: q.Alias, Count: len(messages), Messages: messages, Method: "web_api"}, nil
 }
 
-func (b *managerBackend) GetMessage(accountID string, uid uint32) (*mail.FullMessage, error) {
+func (b *managerBackend) GetMessage(accountID string, uid string) (*mail.FullMessage, error) {
 	mc, err := b.mgr.MailClient(accountID)
 	if err != nil {
 		return nil, mapAccountErr(err)
@@ -312,14 +332,14 @@ func (b *managerBackend) GetMessage(accountID string, uid uint32) (*mail.FullMes
 		return nil, &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "读取邮件失败"}
 	}
 	defer mc.Disconnect()
-	message, err := mc.GetFull(uid)
+	message, err := mc.GetFullID(uid)
 	if err != nil {
 		return nil, &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "读取邮件详情失败"}
 	}
 	return message, nil
 }
 
-func (b *managerBackend) DeleteMessage(accountID string, uid uint32) error {
+func (b *managerBackend) DeleteMessage(accountID string, uid string) error {
 	mc, err := b.mgr.MailClient(accountID)
 	if err != nil {
 		return mapAccountErr(err)
@@ -328,7 +348,7 @@ func (b *managerBackend) DeleteMessage(accountID string, uid uint32) error {
 		return &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "删除邮件失败"}
 	}
 	defer mc.Disconnect()
-	if err := mc.Delete(uid); err != nil {
+	if err := mc.DeleteID(uid); err != nil {
 		return &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "删除邮件失败"}
 	}
 	return nil
@@ -359,6 +379,24 @@ func classifyUpstreamErr(fixedMsg string, err error) *BackendError {
 	if err == nil {
 		return nil
 	}
+	var upstream *hme.UpstreamError
+	if errors.As(err, &upstream) {
+		// Only bounded metadata is logged; never log upstream bodies or credentials.
+		log.Printf("iCloud upstream failure: operation=%s http=%d code=%q response_kind=%s rate_limited=%t retry_after_seconds=%.0f", upstream.Operation, upstream.Status, upstream.Code, upstream.ResponseKind, upstream.RateLimited, upstream.RetryAfter.Seconds())
+		if upstream.RateLimited {
+			return &BackendError{Status: http.StatusTooManyRequests, Code: "UPSTREAM_RATE_LIMITED", Message: "iCloud 别名创建频率受限，请等待冷却", RetryAfter: upstream.RetryAfter}
+		}
+		if upstream.RetryAfter > 0 && upstream.Status >= 500 {
+			return &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: fixedMsg, RetryAfter: upstream.RetryAfter}
+		}
+		if upstream.Status == http.StatusUnauthorized {
+			return &BackendError{Status: http.StatusUnauthorized, Code: "UPSTREAM_UNAUTHORIZED", Message: "iCloud 会话失效,请更新 Cookie"}
+		}
+		if upstream.Status == http.StatusForbidden {
+			return &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FORBIDDEN", Message: "iCloud 拒绝了此操作（HTTP 403），这不一定是 Cookie 失效；请检查 iCloud 官方页面是否允许同一操作"}
+		}
+		return &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: fixedMsg}
+	}
 	if isSessionError(err.Error()) {
 		return &BackendError{Status: http.StatusUnauthorized, Code: "UPSTREAM_UNAUTHORIZED", Message: "iCloud 会话失效,请更新 Cookie"}
 	}
@@ -368,7 +406,7 @@ func classifyUpstreamErr(fixedMsg string, err error) *BackendError {
 // isSessionError 判断错误是否由会话失效引起。
 func isSessionError(msg string) bool {
 	m := strings.ToLower(msg)
-	return strings.Contains(m, "401") || strings.Contains(m, "403") ||
+	return strings.Contains(m, "401") ||
 		strings.Contains(m, "session") || strings.Contains(m, "cookie") ||
 		strings.Contains(m, "unauthorized") || strings.Contains(m, "认证") ||
 		strings.Contains(m, "会话校验失败")

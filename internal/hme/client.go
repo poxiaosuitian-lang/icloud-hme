@@ -7,6 +7,7 @@ package hme
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -76,6 +77,7 @@ type Client struct {
 	dsid        string // 从 validate 响应提取
 	clientID    string // UUID,每次会话生成
 	accountInfo *AccountInfo
+	pendingAuth *authState // 仅驻留内存的两步登录会话，不持久化密码
 }
 
 // NewClient 创建一个新的 HME 客户端,底层使用 Chrome TLS 指纹。
@@ -295,8 +297,11 @@ func (c *Client) request(method, rawURL string, body any, timeout time.Duration,
 			req.Header.Set("Cookie", cookieHeader)
 			if c.Verbose {
 				c.log(">>> URL: %s", fullURL)
-				c.log(">>> Cookie: %s", cookieHeader[:min(200, len(cookieHeader))])
+				c.log(">>> Cookie 数量: %d", len(cookieParts))
 				for k, vv := range req.Header {
+					if strings.EqualFold(k, "Cookie") || strings.EqualFold(k, "Authorization") {
+						continue
+					}
 					for _, v := range vv {
 						c.log(">>> %s: %s", k, v[:min(100, len(v))])
 					}
@@ -324,13 +329,14 @@ func (c *Client) request(method, rawURL string, body any, timeout time.Duration,
 			}
 		}
 
+		upstream := newUpstreamError(resp.StatusCode, string(text), resp.Header.Get("Retry-After"), time.Now())
+		upstream.Operation = requestOperation(req.URL.Path)
+		if upstream.RateLimited || (resp.StatusCode >= 500 && upstream.RetryAfter > 0) {
+			return "", upstream
+		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			snippet := string(text)
-			if len(snippet) > 200 {
-				snippet = snippet[:200]
-			}
-			lastErr = fmt.Errorf("HTTP %d: %s", resp.StatusCode, snippet)
-			// 401/403 说明 Cookie 失效,不重试直接返回。
+			lastErr = upstream
+			// Authentication failure or forbidden operation: do not retry blindly.
 			if resp.StatusCode == 401 || resp.StatusCode == 403 {
 				return "", lastErr
 			}
@@ -341,6 +347,9 @@ func (c *Client) request(method, rawURL string, body any, timeout time.Duration,
 			return "", lastErr
 		}
 
+		if success := gjson.GetBytes(text, "success"); success.Exists() && !success.Bool() {
+			return "", upstream
+		}
 		return string(text), nil
 	}
 	if lastErr != nil {
@@ -474,6 +483,9 @@ func (c *Client) ListAliases() ([]Alias, error) {
 	if err != nil {
 		return nil, err
 	}
+	if flag := gjson.Get(body, "success"); flag.Exists() && !flag.Bool() {
+		return nil, fmt.Errorf("获取别名列表失败")
+	}
 	aliases := parseAliasList(body)
 	c.log("共 %d 个别名", len(aliases))
 	return aliases, nil
@@ -520,7 +532,9 @@ func (c *Client) Reserve(hme, label string) (string, error) {
 		"label": label,
 		"note":  "Created by icloud_hme tool",
 	}
-	body, err := c.request("POST", c.serviceURL+"/v1/hme/reserve", payload, 0, 2)
+	// Reservation is not an idempotent operation. An ambiguous response must
+	// be reconciled by listing aliases, not by silently resending the request.
+	body, err := c.request("POST", c.serviceURL+"/v1/hme/reserve", payload, 0, 1)
 	if err != nil {
 		return "", err
 	}
@@ -555,7 +569,7 @@ func (c *Client) CreateAlias(label string, maxRetries int) (*CreateResult, error
 	if maxRetries <= 0 {
 		maxRetries = 5
 	}
-	var lastErr string
+	var lastErr error
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if attempt > 0 {
 			c.serviceURL = ""
@@ -564,7 +578,11 @@ func (c *Client) CreateAlias(label string, maxRetries int) (*CreateResult, error
 		}
 		hme, err := c.Generate()
 		if err != nil {
-			lastErr = "generate 失败: " + err.Error()
+			lastErr = fmt.Errorf("generate 失败: %w", err)
+			var upstream *UpstreamError
+			if errors.As(err, &upstream) && (upstream.RateLimited || upstream.RetryAfter > 0 || upstream.Status == 401 || upstream.Status == 403) {
+				return nil, lastErr
+			}
 			c.log("%s", lastErr)
 			if attempt < maxRetries-1 {
 				time.Sleep(time.Second)
@@ -574,13 +592,8 @@ func (c *Client) CreateAlias(label string, maxRetries int) (*CreateResult, error
 		}
 		email, err := c.Reserve(hme, label)
 		if err != nil {
-			lastErr = err.Error()
-			c.log("reserve 失败: %s", lastErr)
-			if attempt < maxRetries-1 {
-				time.Sleep(time.Second)
-				continue
-			}
-			break
+			// Never repeat an ambiguous reservation, even with maxRetries > 1.
+			return nil, fmt.Errorf("reserve 失败: %w", err)
 		}
 		return &CreateResult{
 			Email:     email,
@@ -588,8 +601,8 @@ func (c *Client) CreateAlias(label string, maxRetries int) (*CreateResult, error
 			CreatedAt: time.Now().Format(time.RFC3339),
 		}, nil
 	}
-	if lastErr != "" {
-		return nil, fmt.Errorf("创建别名失败: %s", lastErr)
+	if lastErr != nil {
+		return nil, fmt.Errorf("创建别名失败: %w", lastErr)
 	}
 	return nil, fmt.Errorf("创建别名失败,已重试 %d 次", maxRetries)
 }

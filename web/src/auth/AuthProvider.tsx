@@ -15,7 +15,7 @@ type AuthStatus = 'checking' | 'anonymous' | 'authenticated'
 
 interface AuthContextValue {
   status: AuthStatus
-  login: (password: string) => Promise<void>
+  login: (username: string, password: string) => Promise<void>
   logout: () => Promise<void>
 }
 
@@ -73,10 +73,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     registerUnauthorizedHandler(handleUnauthorized)
     return () => registerUnauthorizedHandler(null)
   }, [handleUnauthorized])
-  const login = useCallback(async (password: string) => {
+  const login = useCallback(async (username: string, password: string) => {
     const data = await request<LoginResult>('/api/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ username, password }),
     })
     setCSRFToken(data.csrf_token)
     setStatus('authenticated')

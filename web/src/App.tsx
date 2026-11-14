@@ -6,6 +6,7 @@ import LoginPage from './pages/LoginPage'
 import AccountsPage from './pages/AccountsPage'
 import AliasesPage from './pages/AliasesPage'
 import InboxPage from './pages/InboxPage'
+import APISettingsPage from './pages/APISettingsPage'
 
 function ProtectedLayout() {
   const { status } = useAuth()
@@ -29,6 +30,7 @@ export default function App() {
               <Route path="/accounts" element={<AccountsPage />} />
               <Route path="/aliases" element={<AliasesPage />} />
               <Route path="/inbox" element={<InboxPage />} />
+              <Route path="/api-settings" element={<APISettingsPage />} />
               <Route path="*" element={<Navigate to="/accounts" replace />} />
             </Route>
           </Routes>

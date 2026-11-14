@@ -16,4 +16,7 @@ export const handlers = [
   http.get('/api/accounts', () =>
     HttpResponse.json({ success: true, data: [] }),
   ),
+  http.get('/api/alias-batch', () =>
+    HttpResponse.json({ success: true, data: null }),
+  ),
 ]

@@ -1,11 +1,12 @@
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { request, setCSRFToken } from './client'
+import { registerUnauthorizedHandler, request, setCSRFToken } from './client'
 import { server } from '../test/server'
 
 describe('api client', () => {
   beforeEach(() => {
     setCSRFToken(null)
+    registerUnauthorizedHandler(null)
     server.resetHandlers()
   })
 
@@ -56,6 +57,27 @@ describe('api client', () => {
     )
     request('/api/accounts', undefined, onUnauthorized).catch(() => {})
     await vi.waitFor(() => expect(onUnauthorized).toHaveBeenCalled())
+  })
+
+  it('iCloud 上游登录的 401 不触发管理台退出', async () => {
+    const onUnauthorized = vi.fn()
+    registerUnauthorizedHandler(onUnauthorized)
+    server.use(
+      http.post('/api/accounts/:id/login', () =>
+        HttpResponse.json(
+          { success: false, code: 'UPSTREAM_UNAUTHORIZED', message: 'iCloud 登录失败' },
+          { status: 401 },
+        ),
+      ),
+    )
+
+    await expect(
+      request('/api/accounts/acc_1/login', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'secret' }),
+      }),
+    ).rejects.toMatchObject({ status: 401, code: 'UPSTREAM_UNAUTHORIZED' })
+    expect(onUnauthorized).not.toHaveBeenCalled()
   })
 
   it('GET 不带 CSRF,POST 自动带 CSRF', async () => {

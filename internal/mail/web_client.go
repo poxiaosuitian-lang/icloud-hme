@@ -165,7 +165,8 @@ func (c *WebClient) resolveMccGateway() error {
 
 // threadSearchResp 是 thread/search 接口的响应结构。
 type threadSearchResp struct {
-	TotalThreadsReturned int `json:"totalThreadsReturned"`
+	Success              *bool `json:"success"`
+	TotalThreadsReturned int   `json:"totalThreadsReturned"`
 	ThreadList           []struct {
 		ThreadID  string   `json:"threadId"`
 		Subject   string   `json:"subject"`
@@ -198,13 +199,12 @@ func (c *WebClient) search(payload string) ([]Message, error) {
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("获取邮件失败: HTTP %d - %s", resp.StatusCode, truncate(string(body), 300))
 	}
-	if strings.Contains(string(body), `"success":false`) {
-		return nil, fmt.Errorf("获取邮件失败: %s", truncate(string(body), 300))
-	}
-
 	var result threadSearchResp
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("解析邮件响应失败: %w", err)
+	}
+	if result.Success != nil && !*result.Success {
+		return nil, fmt.Errorf("获取邮件失败: %s", truncate(string(body), 300))
 	}
 
 	messages := make([]Message, 0, len(result.ThreadList))
@@ -228,10 +228,9 @@ func (c *WebClient) search(payload string) ([]Message, error) {
 	return messages, nil
 }
 
-// ListInbox 列出收件箱邮件。
+// ListInbox 合并收件箱与 Junk，limit 为合并后的总上限。
 func (c *WebClient) ListInbox(limit int) ([]Message, error) {
-	payload := fmt.Sprintf(`{"responseType":"THREAD_DIGEST","includeFolderStatus":true,"maxResults":%d,"sessionHeaders":{"folder":"INBOX","modseq":null,"threadmodseq":null,"condstore":1,"qresync":1,"threadmode":1}}`, limit)
-	return c.search(payload)
+	return c.ListInboxFiltered("", limit, 0)
 }
 
 // SearchMails 搜索邮件。query 为空时等价于 ListInbox。
@@ -239,35 +238,72 @@ func (c *WebClient) SearchMails(query string, limit int) ([]Message, error) {
 	if query == "" {
 		return c.ListInbox(limit)
 	}
-	payload := fmt.Sprintf(`{"responseType":"THREAD_DIGEST","includeFolderStatus":false,"maxResults":%d,"query":%q,"sessionHeaders":{"folder":"INBOX","condstore":1,"qresync":1,"threadmode":1}}`, limit, query)
-	return c.search(payload)
+	return c.listCombined(query, "", limit, 0)
 }
 
 // FindByAlias 查找发给指定别名的邮件——在本地过滤(Web API 不支持收件人搜索)。
 func (c *WebClient) FindByAlias(alias string, limit int) ([]Message, error) {
-	// 拉取收件箱全部邮件(最多取 2*limit),本地过滤
-	batchSize := limit * 2
-	if batchSize < 50 {
-		batchSize = 50
-	}
-	raw, err := c.ListInbox(batchSize)
-	if err != nil {
-		return nil, err
-	}
+	return c.ListInboxFiltered(alias, limit, 0)
+}
 
-	// 本地过滤: To/CC/BCC 或主题中包含 alias
-	filtered := make([]Message, 0, limit)
-	for _, m := range raw {
-		if strings.Contains(strings.ToLower(m.Subject), strings.ToLower(alias)) ||
-			strings.Contains(strings.ToLower(m.From), strings.ToLower(alias)) ||
-			strings.Contains(strings.ToLower(m.To), strings.ToLower(alias)) {
-			filtered = append(filtered, m)
-			if len(filtered) >= limit {
-				break
-			}
+// ListInboxFiltered applies the API's alias/days filters to both folders before
+// sorting and limiting. Web alias matching remains a bounded, local heuristic;
+// IMAP is preferred for accurate recipient searches and full message bodies.
+func (c *WebClient) ListInboxFiltered(alias string, limit, days int) ([]Message, error) {
+	return c.listCombined("", alias, limit, days)
+}
+
+func (c *WebClient) listCombined(query, alias string, limit, days int) ([]Message, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	batchSize := limit
+	if alias != "" {
+		batchSize = limit * 2
+		if batchSize < 50 {
+			batchSize = 50
 		}
 	}
-	return filtered, nil
+	alias = strings.ToLower(alias)
+	cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	messages := []Message{}
+	for _, folder := range []string{"INBOX", "Junk"} {
+		payload := map[string]any{
+			"responseType": "THREAD_DIGEST", "includeFolderStatus": query == "", "maxResults": batchSize,
+			"sessionHeaders": map[string]any{
+				"folder": folder, "modseq": nil, "threadmodseq": nil,
+				"condstore": 1, "qresync": 1, "threadmode": 1,
+			},
+		}
+		if query != "" {
+			payload["query"] = query
+		}
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+		batch, err := c.search(string(raw))
+		if err != nil {
+			// Never return a successful partial inbox that silently omits Junk.
+			return nil, &FolderReadError{Err: fmt.Errorf("%s: %w", folder, err)}
+		}
+		for _, m := range batch {
+			if days > 0 {
+				date, err := time.Parse(time.RFC3339, m.Date)
+				if err != nil || date.Before(cutoff) {
+					continue
+				}
+			}
+			if alias != "" && !strings.Contains(strings.ToLower(m.Subject), alias) &&
+				!strings.Contains(strings.ToLower(m.From), alias) &&
+				!strings.Contains(strings.ToLower(m.To), alias) {
+				continue
+			}
+			tagFolder(&m, folder)
+			messages = append(messages, m)
+		}
+	}
+	return mergeLatest(messages, limit), nil
 }
 
 func truncate(s string, n int) string {

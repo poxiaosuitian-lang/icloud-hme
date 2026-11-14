@@ -28,5 +28,8 @@ func failCode(c *gin.Context, status int, code, message string) {
 // backendFail 把 Backend 错误映射为统一失败响应。
 func backendFail(c *gin.Context, err error) {
 	be := asBackendError(err)
+	if be.RetryAfter > 0 {
+		c.Header("Retry-After", formatRetryAfter(be.RetryAfter))
+	}
 	failCode(c, be.Status, be.Code, be.Message)
 }

@@ -85,6 +85,8 @@ describe('AccountsPage', () => {
     expect(screen.getByText('12 / 15')).toBeInTheDocument()
     expect(screen.getAllByText(/已配置/).length).toBeGreaterThan(0)
     expect(screen.getAllByText(/未配置/).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('button', { name: /iCloud 已登录/ }).length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: /App 密码已设置/ })).toBeInTheDocument()
     // 秘密字段不可见
     expect(screen.queryByText(/cookie-secret|app-secret|proxy-secret/)).toBeNull()
   })
@@ -135,6 +137,29 @@ describe('AccountsPage', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 
+  it('添加账号:在第二行及以下连续输入时不会把焦点跳回名称', async () => {
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+    )
+    renderPage()
+    await screen.findByText('活跃号')
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: /添加账号/ }))
+
+    const email = screen.getByLabelText(/iCloud 邮箱/)
+    await user.click(email)
+    await user.type(email, 'test@icloud.com')
+    expect(email).toHaveValue('test@icloud.com')
+    expect(email).toHaveFocus()
+    expect(screen.getByLabelText(/名称/)).toHaveValue('')
+
+    const cookies = screen.getByLabelText(/Cookie（可选/)
+    await user.click(cookies)
+    await user.type(cookies, 'a=1; b=2')
+    expect(cookies).toHaveValue('a=1; b=2')
+    expect(cookies).toHaveFocus()
+  })
+
   it('Cookie 提交后 textarea 清空', async () => {
     let cookieBody = ''
     server.use(
@@ -157,10 +182,12 @@ describe('AccountsPage', () => {
 
   it('iCloud 登录收到 OTP_REQUIRED 后只显示 OTP 输入并可重试', async () => {
     let calls = 0
+    const bodies: Array<Record<string, string>> = []
     server.use(
       http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
-      http.post('/api/accounts/:id/login', async () => {
+      http.post('/api/accounts/:id/login', async ({ request }) => {
         calls++
+        bodies.push((await request.json()) as Record<string, string>)
         if (calls === 1) {
           return HttpResponse.json(
             { success: false, code: 'OTP_REQUIRED', message: '需要提供 OTP 验证码' },
@@ -173,7 +200,10 @@ describe('AccountsPage', () => {
     renderPage()
     await screen.findByText('活跃号')
     const user = userEvent.setup()
-    await user.click(screen.getAllByRole('button', { name: /iCloud 登录/ })[0])
+    const activeRow = screen.getByText('活跃号').closest('tr')!
+    await user.click(within(activeRow).getByRole('button', { name: /iCloud 已登录/ }))
+    expect(screen.getByText('已保存 iCloud Cookie')).toBeInTheDocument()
+    expect(screen.getByText('iCloud 登录邮箱：active@icloud.com')).toBeInTheDocument()
     await user.type(screen.getByLabelText(/密码/), 'p@ssw0rd')
     let dialog = screen.getByRole('dialog')
     await user.click(within(dialog).getByRole('button', { name: /登录/ }))
@@ -184,9 +214,43 @@ describe('AccountsPage', () => {
     dialog = screen.getByRole('dialog')
     await user.click(within(dialog).getByRole('button', { name: /验证/ }))
     await waitFor(() => expect(calls).toBe(2))
+    expect(bodies[0]).toEqual({ password: 'p@ssw0rd' })
+    expect(bodies[1]).toEqual({ otp_code: '123456' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
 
-  it('App Password 提交后清空', async () => {
+  it('iCloud 验证会话过期后恢复密码输入', async () => {
+    let calls = 0
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.post('/api/accounts/:id/login', () => {
+        calls++
+        return calls === 1
+          ? HttpResponse.json(
+              { success: false, code: 'OTP_REQUIRED', message: '需要提供 OTP 验证码' },
+              { status: 409 },
+            )
+          : HttpResponse.json(
+              { success: false, code: 'OTP_SESSION_EXPIRED', message: '验证码会话已失效,请重新输入密码' },
+              { status: 409 },
+            )
+      }),
+    )
+    renderPage()
+    await screen.findByText('活跃号')
+    const user = userEvent.setup()
+    const activeRow = screen.getByText('活跃号').closest('tr')!
+    await user.click(within(activeRow).getByRole('button', { name: /iCloud 已登录/ }))
+    await user.type(screen.getByLabelText(/密码/), 'p@ssw0rd')
+    await user.click(screen.getByRole('button', { name: /重新登录/ }))
+    await user.type(await screen.findByLabelText(/验证码/), '123456')
+    await user.click(screen.getByRole('button', { name: /验证/ }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('验证码会话已失效')
+    expect(screen.getByLabelText(/密码/)).toBeInTheDocument()
+  })
+
+  it('App Password 已配置时显示状态、预填邮箱且更新后关闭', async () => {
     let pwdBody = ''
     server.use(
       http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
@@ -198,12 +262,16 @@ describe('AccountsPage', () => {
     renderPage()
     await screen.findByText('活跃号')
     const user = userEvent.setup()
-    await user.click(screen.getAllByRole('button', { name: /设置 App 密码/ })[0])
-    await user.type(screen.getByLabelText(/邮箱/), 'app@icloud.com')
+    await user.click(screen.getByRole('button', { name: /App 密码已设置/ }))
+    expect(screen.getByText('已完成 App 专用密码设置')).toBeInTheDocument()
+    const emailInput = screen.getByLabelText(/邮箱/)
+    expect(emailInput).toHaveValue('active@icloud.com')
+    await user.clear(emailInput)
+    await user.type(emailInput, 'app@icloud.com')
     await user.type(screen.getByLabelText('App 专用密码'), 'xxxx-xxxx-xxxx-xxxx')
-    await user.click(screen.getByRole('button', { name: /保存/ }))
+    await user.click(screen.getByRole('button', { name: /更新密码/ }))
     await waitFor(() => expect(pwdBody).toContain('app@icloud.com'))
-    expect((screen.getByLabelText('App 专用密码') as HTMLInputElement).value).toBe('')
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
 
   it('代理从不回显:保存后输入清空,关闭再打开仍为空', async () => {

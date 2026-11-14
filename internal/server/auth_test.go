@@ -38,7 +38,7 @@ func TestAuthWrongPassword(t *testing.T) {
 	_, ts := newTestServer(f)
 	defer ts.Close()
 
-	req, _ := http.NewRequest("POST", ts.URL+"/api/auth/login", strings.NewReader(`{"password":"wrong-password"}`))
+	req, _ := http.NewRequest("POST", ts.URL+"/api/auth/login", strings.NewReader(`{"username":"admin","password":"wrong-password"}`))
 	req.Header.Set("Content-Type", "application/json")
 	status, body, cookies := do(t, req)
 	if status != http.StatusUnauthorized {
@@ -58,13 +58,32 @@ func TestAuthWrongPassword(t *testing.T) {
 	}
 }
 
+// TestAuthWrongUsername 验证密码正确但账号错误时仍拒绝登录。
+func TestAuthWrongUsername(t *testing.T) {
+	f := &fakeBackend{}
+	_, ts := newTestServer(f)
+	defer ts.Close()
+
+	req, _ := http.NewRequest("POST", ts.URL+"/api/auth/login", strings.NewReader(`{"username":"wrong-user","password":"admin-pass-2026-strong"}`))
+	req.Header.Set("Content-Type", "application/json")
+	status, body, cookies := do(t, req)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("期望 401,得到 %d: %s", status, body)
+	}
+	for _, c := range cookies {
+		if c.Name == "hme_session" {
+			t.Fatal("错误账号不应设置 hme_session Cookie")
+		}
+	}
+}
+
 // TestAuthLoginSuccess 验证正确登录设置 HttpOnly/SameSite=Strict Cookie。
 func TestAuthLoginSuccess(t *testing.T) {
 	f := &fakeBackend{}
 	_, ts := newTestServer(f)
 	defer ts.Close()
 
-	req, _ := http.NewRequest("POST", ts.URL+"/api/auth/login", strings.NewReader(`{"password":"admin-pass-2026-strong"}`))
+	req, _ := http.NewRequest("POST", ts.URL+"/api/auth/login", strings.NewReader(`{"username":"admin","password":"admin-pass-2026-strong"}`))
 	req.Header.Set("Content-Type", "application/json")
 	status, body, cookies := do(t, req)
 	if status != http.StatusOK {
@@ -180,7 +199,7 @@ func TestAuthRateLimit(t *testing.T) {
 	var lastStatus int
 	var lastBody string
 	for i := 0; i < 6; i++ {
-		req, _ := http.NewRequest("POST", ts.URL+"/api/auth/login", strings.NewReader(`{"password":"wrong-password"}`))
+		req, _ := http.NewRequest("POST", ts.URL+"/api/auth/login", strings.NewReader(`{"username":"admin","password":"wrong-password"}`))
 		req.Header.Set("Content-Type", "application/json")
 		lastStatus, lastBody, _ = do(t, req)
 	}

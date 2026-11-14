@@ -22,5 +22,6 @@ FROM alpine:latest
 RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
 COPY --from=builder /build/icloud-hme .
+COPY internal/icloudmail/LICENSE internal/icloudmail/NOTICE.md internal/icloudmail/UPSTREAM.txt /usr/share/licenses/icloud-mail/
 EXPOSE 8081
 ENTRYPOINT ["/app/icloud-hme"]

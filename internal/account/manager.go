@@ -5,7 +5,9 @@
 package account
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,26 +18,28 @@ import (
 
 	"github.com/google/uuid"
 	"icloud-hme/internal/hme"
+	"icloud-hme/internal/icloudmail/apple"
 	"icloud-hme/internal/mail"
 )
 
 // Account 描述一个 iCloud 账号。
 type Account struct {
-	ID            string            `json:"id"`
-	Name          string            `json:"name"`
-	RealEmail     string            `json:"real_email"`
-	ICloudEmail   string            `json:"icloud_email"`
-	Cookies       map[string]string `json:"cookies"`
-	Host          string            `json:"host"`
-	Proxy         string            `json:"proxy,omitempty"` // HTTP/SOCKS5 代理
-	AppPassword   string            `json:"app_password,omitempty"`
-	Mailbox       *MailboxConfig    `json:"mailbox,omitempty"`
-	Status        string            `json:"status"` // active / error
-	AliasTotal    int               `json:"alias_total"`
-	AliasActive   int               `json:"alias_active"`
-	LastValidated string            `json:"last_validated"`
-	LastError     string            `json:"last_error,omitempty"`
-	CreatedAt     string            `json:"created_at"`
+	AppleSession  *apple.AccountSession `json:"apple_account_session,omitempty"`
+	ID            string                `json:"id"`
+	Name          string                `json:"name"`
+	RealEmail     string                `json:"real_email"`
+	ICloudEmail   string                `json:"icloud_email"`
+	Cookies       map[string]string     `json:"cookies"`
+	Host          string                `json:"host"`
+	Proxy         string                `json:"proxy,omitempty"` // HTTP/SOCKS5 代理
+	AppPassword   string                `json:"app_password,omitempty"`
+	Mailbox       *MailboxConfig        `json:"mailbox,omitempty"`
+	Status        string                `json:"status"` // active / error
+	AliasTotal    int                   `json:"alias_total"`
+	AliasActive   int                   `json:"alias_active"`
+	LastValidated string                `json:"last_validated"`
+	LastError     string                `json:"last_error,omitempty"`
+	CreatedAt     string                `json:"created_at"`
 }
 
 // MailboxConfig describes an external mailbox used to receive forwarded mail.
@@ -49,11 +53,26 @@ type MailboxConfig struct {
 
 // Manager 管理多个 iCloud 账号,线程安全。
 type Manager struct {
-	mu       sync.RWMutex
-	accounts map[string]*Account
-	dataDir  string
-	dataFile string
-	imapPool *mail.Pool // IMAP 长连接池
+	appleLocks    sync.Map
+	applePending  sync.Map
+	appleCancel   context.CancelFunc
+	appleDone     chan struct{}
+	appleClient   *apple.Client
+	mu            sync.RWMutex
+	accounts      map[string]*Account
+	pendingLogins map[string]*pendingLogin
+	dataDir       string
+	dataFile      string
+	imapPool      *mail.Pool // IMAP 长连接池
+}
+
+const pendingLoginTTL = 5 * time.Minute
+
+// pendingLogin 保存尚未完成 2FA 的短期 Apple 会话；只驻留内存。
+type pendingLogin struct {
+	client    *hme.Client
+	expiresAt time.Time
+	mu        sync.Mutex
 }
 
 // cloneCookies 返回 Cookie map 的独立副本。
@@ -75,6 +94,11 @@ func copyAccount(acc *Account) *Account {
 	}
 	cp := *acc
 	cp.Cookies = cloneCookies(acc.Cookies)
+	if acc.AppleSession != nil {
+		raw, _ := json.Marshal(acc.AppleSession)
+		cp.AppleSession = new(apple.AccountSession)
+		_ = json.Unmarshal(raw, &cp.AppleSession)
+	}
 	return &cp
 }
 
@@ -84,12 +108,16 @@ func NewManager(dataDir string) (*Manager, error) {
 		return nil, err
 	}
 	m := &Manager{
-		accounts: make(map[string]*Account),
-		dataDir:  dataDir,
-		dataFile: filepath.Join(dataDir, "accounts.json"),
-		imapPool: mail.NewPool(),
+		accounts:      make(map[string]*Account),
+		pendingLogins: make(map[string]*pendingLogin),
+		dataDir:       dataDir,
+		dataFile:      filepath.Join(dataDir, "accounts.json"),
+		imapPool:      mail.NewPool(),
 	}
 	if err := m.load(); err != nil {
+		return nil, err
+	}
+	if err := m.startAppleMaintenance(); err != nil {
 		return nil, err
 	}
 	return m, nil
@@ -97,6 +125,10 @@ func NewManager(dataDir string) (*Manager, error) {
 
 // Close 释放 IMAP 连接池等资源。
 func (m *Manager) Close() {
+	if m.appleCancel != nil {
+		m.appleCancel()
+		<-m.appleDone
+	}
 	if m.imapPool != nil {
 		m.imapPool.Close()
 	}
@@ -142,7 +174,22 @@ func (m *Manager) save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(m.dataFile, raw, 0600)
+	f, err := os.CreateTemp(m.dataDir, ".accounts-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err = f.Write(raw); err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return os.Rename(f.Name(), m.dataFile)
 }
 
 // ParseCookieInput 解析 Cookie 输入,支持两种格式:
@@ -357,6 +404,10 @@ func (m *Manager) UpdateMetadata(id string, input UpdateAccountInput) (Summary, 
 	if name != nil {
 		acc.Name = *name
 	}
+	if (email != nil && *email != acc.ICloudEmail) || (host != nil && *host != acc.Host) {
+		acc.AppleSession = nil
+		m.applePending.Delete(id)
+	}
 	if email != nil {
 		acc.ICloudEmail = *email
 	}
@@ -396,6 +447,8 @@ func (m *Manager) RemoveAccount(id string) bool {
 		return false
 	}
 	delete(m.accounts, id)
+	delete(m.pendingLogins, id)
+	m.applePending.Delete(id)
 	_ = m.save()
 	return true
 }
@@ -420,6 +473,7 @@ func (m *Manager) ListAccounts() []*Account {
 	for _, acc := range m.accounts {
 		cp := copyAccount(acc)
 		cp.Cookies = nil
+		cp.AppleSession = nil
 		cp.AppPassword = ""
 		if acc.Mailbox != nil {
 			mailbox := *acc.Mailbox
@@ -484,9 +538,9 @@ func (m *Manager) HMEClient(id string, verbose bool) (*hme.Client, error) {
 	return hme.NewClient(snap.Cookies, snap.Host, snap.Proxy, verbose)
 }
 
-// HMEClientWithPassword 为指定账号创建一个新的 HME 客户端,使用账号密码登录。
-// 登录成功后会自动获取 Cookie 并保存到账号配置。
-func (m *Manager) HMEClientWithPassword(id, password string, otpProvider hme.OTPProvider) (*hme.Client, error) {
+// HMEClientWithPassword 使用账号密码进行两阶段登录。
+// 首次调用传 password；收到 OTP 后再次调用并传 otpCode，会复用原 Apple 会话。
+func (m *Manager) HMEClientWithPassword(id, password, otpCode string) (*hme.Client, error) {
 	m.mu.RLock()
 	acc, ok := m.accounts[id]
 	var snap *Account
@@ -498,21 +552,52 @@ func (m *Manager) HMEClientWithPassword(id, password string, otpProvider hme.OTP
 		return nil, fmt.Errorf("账号不存在: %s", id)
 	}
 
-	email := snap.ICloudEmail
-	if email == "" {
-		email = snap.RealEmail
-	}
+	email := snap.loginEmail()
 	if email == "" {
 		return nil, fmt.Errorf("账号未设置邮箱地址")
 	}
 
-	client, err := hme.NewClient(nil, snap.Host, snap.Proxy, true)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := client.Login(email, password, otpProvider); err != nil {
-		return nil, err
+	var client *hme.Client
+	if otpCode != "" {
+		m.mu.RLock()
+		pending := m.pendingLogins[id]
+		m.mu.RUnlock()
+		if pending == nil || time.Now().After(pending.expiresAt) {
+			m.mu.Lock()
+			delete(m.pendingLogins, id)
+			m.mu.Unlock()
+			return nil, fmt.Errorf("OTP 验证会话已失效,请重新输入密码")
+		}
+		pending.mu.Lock()
+		defer pending.mu.Unlock()
+		client = pending.client
+		if err := client.CompleteLogin(otpCode); err != nil {
+			return nil, err
+		}
+		m.mu.Lock()
+		if m.pendingLogins[id] == pending {
+			delete(m.pendingLogins, id)
+		}
+		m.mu.Unlock()
+	} else {
+		m.mu.Lock()
+		delete(m.pendingLogins, id)
+		m.mu.Unlock()
+		var err error
+		client, err = hme.NewClient(nil, snap.Host, snap.Proxy, true)
+		if err != nil {
+			return nil, err
+		}
+		err = client.StartLogin(email, password)
+		if errors.Is(err, hme.ErrOTPRequired) {
+			m.mu.Lock()
+			m.pendingLogins[id] = &pendingLogin{client: client, expiresAt: time.Now().Add(pendingLoginTTL)}
+			m.mu.Unlock()
+			return nil, err
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// 先保存 accountLogin 返回的 Cookie，随后通过 validate 刷新会话并再次持久化。
@@ -550,6 +635,12 @@ func (m *Manager) HMEClientWithPassword(id, password string, otpProvider hme.OTP
 	}
 
 	return client, nil
+}
+
+// loginEmail uses the configured iCloud mailbox for login, falling back to
+// the validated account identity only when no iCloud address is configured.
+func (a *Account) loginEmail() string {
+	return firstNonEmpty(strings.TrimSpace(a.ICloudEmail), strings.TrimSpace(a.RealEmail))
 }
 
 // MailClient 为指定账号创建 IMAP 邮件客户端(每次新建, 不走连接池)。

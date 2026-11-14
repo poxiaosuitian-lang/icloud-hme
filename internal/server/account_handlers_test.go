@@ -135,7 +135,7 @@ func TestAccountLoginResponseNoSecrets(t *testing.T) {
 	for key := range out.Data {
 		switch key {
 		case "id", "name", "real_email", "icloud_email", "host", "status", "alias_total",
-			"alias_active", "has_cookies", "has_app_password", "has_proxy",
+			"alias_active", "has_apple_session", "has_cookies", "has_app_password", "has_proxy",
 			"last_validated", "status_message", "created_at":
 		default:
 			t.Fatalf("登录响应包含意外字段 %q", key)

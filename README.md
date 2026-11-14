@@ -8,14 +8,28 @@
 
 - ✅ **中文管理界面** — 浏览器访问 `http://localhost:8081` 即开即用
 - ✅ **创建 HME 别名** — 自动生成 iCloud 隐藏邮箱地址
+- ✅ **自动注册别名** — 设置本次数量与每个间隔秒数，后台依次注册、显示进度并支持停止；每账号别名总数限制为 750 个（含已停用别名）
 - ✅ **列出所有别名** — 查看账号下的所有 HME 别名
-- ✅ **收取邮件** — 通过 IMAP 或 Web API 读取发到 HME 别名的邮件
+- ✅ **收取邮件** — IMAP 合并收件箱与 Junk 垃圾邮件，显示来源并支持别名筛选；只读展示，不自动搬动邮件。Web API 回退同样合并 INBOX 与 Junk
 - ✅ **双路径读信** — 邮件读取优先走 IMAP (App Password),无 App Password 时回退 Web API (Cookie)
 - ✅ **多账号管理** — 支持多个 iCloud 账号并行管理
 - ✅ **双认证模式** — Cookie (创建别名 + 读邮件回退) 和 App Password (IMAP 优先)
 - ✅ **安全模型** — 单管理员会话、CSRF 校验、登录限流、响应脱敏
 
 ## 快速开始
+
+### 自动注册别名
+
+在「别名管理」选择账号，点击 **自动注册别名**，填写 **本次注册数量**（1–剩余额度）、
+**每个间隔（秒）**（1–86400，可输入小数）和 **冷却时长（分钟）**（1–1440 的整数，默认 60），点击 **开始注册**。标签前缀可留空，系统自动追加任务编号和序号。
+以下为单通道模式；双通道 auto 使用文末的 19+4 小时计划。单通道第一项立即执行，后续每项在上一项完成后等待指定秒数；默认本次 10 个、间隔 10 秒，不并发注册。每成功创建 5 个后主动进入冷却，期间不发起任务注册请求，到期自动继续剩余数量；最后一批完成即结束，不再冷却。批次间等待取冷却时长和每个间隔中的较大值。
+
+任务在服务端运行，关闭或刷新网页仍会继续；再次打开页面可查看进度和停止。
+每账号同时只运行一个任务，自动、手动和 Token API 创建均在创建前重新检查 750 个总数上限。
+如剩余额度小于本次数量，启动时提示减少数量；遇到上游临时错误进入冷却：首次使用本任务设定的冷却时长，连续失败逐次加倍至 120 分钟（设定超过 120 分钟时不缩短，上游 `Retry-After` 更长时优先遵守）；成功后重置退避。冷却结束先查询别名列表，核对同一任务标签，避免响应丢失后重复创建，再继续剩余数量。
+冷却期间显示恢复时间、已完成数量和冷却次数，可随时停止，同账号禁止重复启动。Cookie 失效、账号配置错误或额度耗尽仍停止并提示，已注册别名保留。
+停止时不再发起新注册，已发送的一次请求可能仍完成。单通道任务不持久化，**容器重启后需手动重新开始**；双通道 auto 的计划和预算持久化并自动恢复。
+不会自动启用任务或替用户创建测试别名。
 
 ### 1. 安装
 
@@ -33,6 +47,7 @@
 
 ```bash
 # 示例：Linux 下直接运行（必须先设置管理员密码）
+export ICLOUD_HME_ADMIN_USERNAME='admin'
 export ICLOUD_HME_ADMIN_PASSWORD='change-this-before-running-2026'
 chmod +x icloud-hme_linux_amd64
 ./icloud-hme_linux_amd64
@@ -49,11 +64,12 @@ docker run -d \
   --name icloud-hme \
   -p 8081:8081 \
   -v /path/to/data:/app/data \
+  -e ICLOUD_HME_ADMIN_USERNAME='admin' \
   -e ICLOUD_HME_ADMIN_PASSWORD='change-this-before-running-2026' \
   ghcr.io/xiaozhou26/icloud-hme:latest
 ```
 
-> ⚠️ 上面的密码仅为示例，**不可照抄**，请务必更换为至少 8 字符的强密码。
+> ⚠️ 上面的密码仅为示例，**不可照抄**，请务必更换为至少 6 字符的强密码。
 
 镜像支持 `linux/amd64` 和 `linux/arm64` 双架构，自动适配。
 
@@ -79,7 +95,8 @@ go build -o icloud-hme .
 
 | 环境变量 | 说明 | 默认 |
 |---|---|---|
-| `ICLOUD_HME_ADMIN_PASSWORD` | 管理员密码，**必填**，至少 8 字符 | 无（缺失时拒绝启动） |
+| `ICLOUD_HME_ADMIN_USERNAME` | 管理员账号 | `admin` |
+| `ICLOUD_HME_ADMIN_PASSWORD` | 管理员密码，**必填**，至少 6 字符 | 无（缺失时拒绝启动） |
 | `ICLOUD_HME_SESSION_TTL` | 会话有效期 | `12h`（范围 `15m`–`168h`） |
 | `ICLOUD_HME_SECURE_COOKIE` | 通过 TLS 反向代理部署时设为 `true` | `false` |
 
@@ -117,6 +134,7 @@ go build -o icloud-hme .
 
 ```bash
 # 二进制方式（默认 data 目录）
+export ICLOUD_HME_ADMIN_USERNAME='admin'
 export ICLOUD_HME_ADMIN_PASSWORD='your-strong-password'
 ./icloud-hme_linux_amd64
 
@@ -500,7 +518,7 @@ icloud-hme/
 
 ### Q: 创建别名返回 401/403 错误?
 
-**A:** Cookie 已过期，需要重新获取。iCloud Cookie 有效期通常为 24 小时。
+**A:** 区分两种情况：401 表示上游认证失败，可重新登录或更新 Cookie；普通 403 表示操作被拒绝，单凭这个状态不能判断 Cookie 过期。如果别名列表仍可读取，应对照 iCloud 官方页面能否创建地址，并查看服务端脱敏日志中的 `operation`、`code` 和 `response_kind`。空响应的 403 没有具体错误原因，不应猜成限流并反复重试。明确的限流响应仍按配置冷却。
 
 ### Q: 读取邮件返回超时?
 
@@ -524,6 +542,7 @@ npm --prefix web ci
 npm --prefix web run dev
 
 # 后端开发模式
+export ICLOUD_HME_ADMIN_USERNAME='admin'
 export ICLOUD_HME_ADMIN_PASSWORD='your-strong-password'
 go run main.go -debug
 
@@ -592,7 +611,8 @@ Download the latest binary from [GitHub Releases](https://github.com/xiaozhou26/
 | Windows x86_64 | `icloud-hme_windows_amd64.exe` |
 
 ```bash
-# Linux example (admin password is REQUIRED, min 8 chars)
+# Linux example (admin password is REQUIRED, min 6 chars)
+export ICLOUD_HME_ADMIN_USERNAME='admin'
 export ICLOUD_HME_ADMIN_PASSWORD='change-this-before-running-2026'
 chmod +x icloud-hme_linux_amd64
 ./icloud-hme_linux_amd64
@@ -607,11 +627,12 @@ docker run -d \
   --name icloud-hme \
   -p 8081:8081 \
   -v /path/to/data:/app/data \
+  -e ICLOUD_HME_ADMIN_USERNAME='admin' \
   -e ICLOUD_HME_ADMIN_PASSWORD='change-this-before-running-2026' \
   ghcr.io/xiaozhou26/icloud-hme:latest
 ```
 
-> The password above is only an example — do NOT copy it. Use a strong password with at least 8 characters.
+> The password above is only an example — do NOT copy it. Use a strong password with at least 6 characters.
 
 #### Option 3: Build from source (Go 1.26+ and Node.js 22.12+)
 
@@ -632,10 +653,41 @@ go build -o icloud-hme .
 
 | Env var | Description | Default |
 |---|---|---|
-| `ICLOUD_HME_ADMIN_PASSWORD` | Admin password, **required**, min 8 chars | none (refuses to start) |
+| `ICLOUD_HME_ADMIN_USERNAME` | Admin username | `admin` |
+| `ICLOUD_HME_ADMIN_PASSWORD` | Admin password, **required**, min 6 chars | none (refuses to start) |
 | `ICLOUD_HME_SESSION_TTL` | Session TTL | `12h` (range `15m`–`168h`) |
 | `ICLOUD_HME_SECURE_COOKIE` | Set `true` when deployed behind TLS | `false` |
 
 > **Breaking change (v0.3+)**: without `ICLOUD_HME_ADMIN_PASSWORD` the server refuses to start; all API endpoints now require login (`401 AUTH_REQUIRED`). Admin sessions are in-memory only and are lost on restart.
 
 Create `data/accounts.json` (see `accounts.json.template`) and start the server (default port `:8081`). Open `http://localhost:8081` to use the management UI. Full API contract: [API.md](API.md).
+
+## 程序调用 API
+
+`/api/v1` Token API：按 `caller_id` 为不同调用商独立分配别名（优先该调用商未用过的已有别名，耗尽后才新建）、列出别名、按别名查询收件箱和读取邮件正文。相同邮箱可供不同调用商分别使用，同调用商并发和重启后不重复分配，失败也不回收。占用记录保存在 `data/alias-usage.json`；旧客户端和旧记录归默认分组 `default`。支持通过 `/aliases/usage` 查询各调用商统计、导入对应历史记录。`caller_id` 仅区分使用记录，不是权限隔离。
+在 `.env` 设置 `ICLOUD_HME_API_TOKEN`（至少 32 字符的独立随机密钥），执行
+`docker compose up -d --build` 后通过 `Authorization: Bearer TOKEN` 调用；无需浏览器会话或 CSRF。
+未配置 Token 时程序 API 关闭。完整参数、curl 示例和收件轮询说明见 [API.md](API.md#程序调用-api新增)。
+
+顶部导航现有 **API 设置**：管理 Token、开关服务、复制接口地址及调用示例。
+页面还显示各调用商的已用邮箱数，可填写“调用商标识”生成带 `caller_id` 的示例；实际调用程序需发送各自固定的标识。
+页面保存后，持久化的 `data/api-settings.json` 优先于初始 `.env` Token，配置立即生效。
+
+### 合并垃圾邮件（IMAP）
+
+邮件列表默认合并 `INBOX` 与 `Junk`，新旧隐私别名均适用，无需逐个设置信任规则。
+来源会显示为“收件箱”或“垃圾邮件”；邮件留在原文件夹，不自动标记已读。
+详情/删除操作使用完整 `id`：收件箱示例 `3`，垃圾邮件示例 `Junk:3`，避免同 UID 跨文件夹混淆。
+接口调用方应保留字符串 ID，并对路径参数 URL 编码。IMAP 与 Web API 回退均合并两个文件夹并应用总 limit 和 days；Web API 的别名筛选仍限于有限批次摘要，详情接口仍需 IMAP ID。
+
+### 自动创建：新旧双通道
+
+1. 保留 iCloud Web 登录（用于旧通道及共享目录校验）。
+2. 在「账号」页点击「登录新通道」，完成 Apple Account 密码和双重认证。
+3. 在「别名 → 自动注册别名」选择「新旧双通道 · 原项目 19+4 小时计划」。
+
+双通道采用参考项目的自动调度：一小时随机分布 23 个时隙，最小间隔 2 分钟；新通道 19 个，旧通道在第 6、12、18、23 个时隙运行。首次同样等待计划时间。仅旧通道可用时降级为每小时 5 个分散时隙，登录恢复后自动切回。限流独立冷却至少一小时，不借用另一通道时隙；共享请求限流整体等待，尊重更长 Retry-After。
+
+双通道计划、进度、滚动预算和冷却保存到 `data/dual-schedules.json`，重启后继续，手动停止不会恢复。错过的计划不集中补发；在途结果不确定时暂停核对，避免重复创建。保留本应用的目标数量和总数上限。旧通道和单独新通道模式保持原有设置，不随此次变更调整。
+
+以上是参考项目的本地调度上限，不代表 Apple 保证的配额。协议与调度参考 [t508708/icloud-mail](https://github.com/t508708/icloud-mail)，固定提交及原始来源/许可说明保存在 `internal/icloudmail/`。详细接口和区别见 API.md。
