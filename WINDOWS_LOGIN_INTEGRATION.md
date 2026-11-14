@@ -19,3 +19,11 @@
 Windows 客户端先检查 status，仅在需要时发主密码；只有 trusted_device 验证才尝试一次本机六位码。未完成时面板提示人工输入，不能自动循环、自动请求短信或伪报就绪。
 
 部署：保留数据卷、环境文件及 `ICLOUD_HME_IMPORT_TOKEN`，在 Linux 运行 `go test ./internal/account ./internal/server ./internal/icloudmail/apple` 后重建当前项目镜像/程序（Compose build 部署使用 `docker compose up -d --build`）。确认新路由未鉴权为 401，再从 Windows 面板确认同步。不需要更换密钥或服务器 URL。
+
+### 身份绑定兼容性
+
+Apple ID 与 iCloud 收件地址可以不同。集成登录按导入时 Apple validate 已验证的
+`verified_apple_id`、DSID 和 `source_id` 绑定，SRP 使用该 Apple ID，不使用收件地址
+替代。旧的非导入账号保留原登录规则。待验证 challenge 还绑定导入凭据版本、
+收件地址及代理/区域配置；重新导入或配置变化后，旧 challenge 和在途登录结果
+不会覆盖新账号状态。主密码和验证码仍不落盘。

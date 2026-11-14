@@ -17,10 +17,13 @@ var ErrAppleOTPExpired = errors.New("Apple Account OTP session expired")
 var ErrAppleSessionChanged = errors.New("Apple Account configuration changed")
 
 type pendingAppleLogin struct {
-	session               apple.AccountSession
-	expires               time.Time
-	identity, proxy, host string
-	challenge             string
+	session                      apple.AccountSession
+	expires                      time.Time
+	identity, proxy, host        string
+	challenge                    string
+	importSourceID, verifiedDSID string
+	importRevision               uint64
+	mailbox                      string
 }
 
 func (m *Manager) appleLock(id string) *sync.Mutex {
@@ -43,7 +46,9 @@ func (m *Manager) saveAppleSession(snapshot *Account, session apple.AccountSessi
 	if a == nil {
 		return fmt.Errorf("账号不存在")
 	}
-	if a.loginEmail() != snapshot.loginEmail() || a.Proxy != snapshot.Proxy || a.Host != snapshot.Host {
+	if a.appleLoginIdentity() != snapshot.appleLoginIdentity() || a.ICloudEmail != snapshot.ICloudEmail ||
+		a.ImportSourceID != snapshot.ImportSourceID || a.VerifiedDSID != snapshot.VerifiedDSID ||
+		a.ImportRevision != snapshot.ImportRevision || a.Proxy != snapshot.Proxy || a.Host != snapshot.Host {
 		return ErrAppleSessionChanged
 	}
 	old := a.AppleSession
@@ -79,7 +84,7 @@ func (m *Manager) loginAppleAccountLocked(ctx context.Context, id, password, cod
 		if p.challenge != challenge {
 			return Summary{}, ErrAppleOTPExpired
 		}
-		if time.Now().After(p.expires) || p.identity != a.loginEmail() || p.proxy != a.Proxy || p.host != a.Host {
+		if time.Now().After(p.expires) || !p.matchesAccount(a) {
 			m.applePending.Delete(id)
 			return Summary{}, ErrAppleOTPExpired
 		}
@@ -96,12 +101,12 @@ func (m *Manager) loginAppleAccountLocked(ctx context.Context, id, password, cod
 			region = apple.RegionChina
 		}
 		var pending bool
-		s, pending, err = m.appleClient.SignInAccount(ctx, a.loginEmail(), password, region, a.AppleSession)
+		s, pending, err = m.appleClient.SignInAccount(ctx, a.appleLoginIdentity(), password, region, a.AppleSession)
 		if err != nil {
 			return Summary{}, err
 		}
 		if pending {
-			m.applePending.Store(id, pendingAppleLogin{s, time.Now().Add(pendingLoginTTL), a.loginEmail(), a.Proxy, a.Host, challenge})
+			m.applePending.Store(id, pendingAppleLogin{session: s, expires: time.Now().Add(pendingLoginTTL), identity: a.appleLoginIdentity(), proxy: a.Proxy, host: a.Host, challenge: challenge, importSourceID: a.ImportSourceID, verifiedDSID: a.VerifiedDSID, importRevision: a.ImportRevision, mailbox: a.ICloudEmail})
 			return Summary{}, ErrAppleOTPRequired
 		}
 	}
@@ -219,4 +224,21 @@ func (m *Manager) refreshAppleAccount(ctx context.Context, id string) {
 		s.RefreshAfter = time.Now().Add(max(delay, apple.RetryDelay(err)))
 	}
 	_ = m.saveAppleSession(a, s)
+}
+
+// Imported Apple IDs may be external email addresses or phone numbers; their
+// iCloud mailbox is not the credential identity supplied by the Windows client.
+// Keep the historical login choice for accounts not imported through validation.
+func (a *Account) appleLoginIdentity() string {
+	if a.ImportSourceID != "" && a.VerifiedDSID != "" &&
+		a.ImportSourceID == ImportSourceID(a.VerifiedAppleID) &&
+		normalizeIdentity(a.VerifiedAppleID) == normalizeIdentity(a.RealEmail) {
+		return normalizeIdentity(a.VerifiedAppleID)
+	}
+	return a.loginEmail()
+}
+func (p pendingAppleLogin) matchesAccount(a *Account) bool {
+	return p.identity == a.appleLoginIdentity() && p.proxy == a.Proxy && p.host == a.Host &&
+		p.importSourceID == a.ImportSourceID && p.verifiedDSID == a.VerifiedDSID &&
+		p.importRevision == a.ImportRevision && p.mailbox == a.ICloudEmail
 }

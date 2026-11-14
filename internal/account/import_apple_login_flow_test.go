@@ -22,7 +22,7 @@ func TestImportAppleLoginSRPToPersistedSession(t *testing.T) {
 	<-m.appleDone
 	identity := "owner@example.test"
 	source := ImportSourceID(identity)
-	m.accounts["fixture"] = &Account{ID: "fixture", RealEmail: identity, ImportSourceID: source, Host: "icloud.com"}
+	m.accounts["fixture"] = &Account{ID: "fixture", RealEmail: identity, VerifiedAppleID: identity, VerifiedDSID: "12345", ICloudEmail: "different@icloud.com", ImportSourceID: source, Host: "icloud.com"}
 	completes, verifies := 0, 0
 	m.appleClient, err = apple.NewClient(apple.Config{Transport: importLoginTransport(func(r *http.Request) (*http.Response, error) {
 		status := 200
@@ -40,6 +40,12 @@ func TestImportAppleLoginSRPToPersistedSession(t *testing.T) {
 			headers.Set("X-Apple-HC-Challenge", "fixture")
 		case "/appleauth/auth/verify/device/key/challenge", "/appleauth/auth/federate":
 		case "/appleauth/auth/signin/init":
+			var input struct {
+				AccountName string `json:"accountName"`
+			}
+			if json.NewDecoder(r.Body).Decode(&input) != nil || input.AccountName != identity {
+				t.Error("SRP did not use verified Apple ID")
+			}
 			body = `{"salt":"c2FsdFNhbHQ=","b":"Ag==","c":"Yw==","iteration":1000,"protocol":"s2k_fo"}`
 		case "/appleauth/auth/signin/complete":
 			completes++

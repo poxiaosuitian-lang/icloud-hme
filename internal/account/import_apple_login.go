@@ -62,7 +62,11 @@ func (m *Manager) ImportAppleLogin(ctx context.Context, r ImportAppleLoginReques
 	m.mu.RLock()
 	id := ""
 	for _, a := range m.accounts {
-		if a.ImportSourceID == r.SourceID && normalizeIdentity(a.loginEmail()) == r.AppleID {
+		if a != nil && a.ImportSourceID == r.SourceID {
+			if !matchesImportAppleIdentity(a, r) {
+				m.mu.RUnlock()
+				return out, ImportConflict
+			}
 			if id != "" {
 				m.mu.RUnlock()
 				return out, ImportConflict
@@ -80,7 +84,7 @@ func (m *Manager) ImportAppleLogin(ctx context.Context, r ImportAppleLoginReques
 	}
 	defer lock.Unlock()
 	a, ok := m.GetAccount(id)
-	if !ok || a.ImportSourceID != r.SourceID || normalizeIdentity(a.loginEmail()) != r.AppleID {
+	if !ok || !matchesImportAppleIdentity(a, r) {
 		return out, ImportConflict
 	}
 	if r.Operation == "status" {
@@ -106,7 +110,7 @@ func (m *Manager) ImportAppleLogin(ctx context.Context, r ImportAppleLoginReques
 		// send repeated login challenges while the same login is awaiting its OTP.
 		if v, found := m.applePending.Load(id); found {
 			p := v.(pendingAppleLogin)
-			if p.challenge != "" && time.Now().Before(p.expires) && p.identity == a.loginEmail() && p.host == a.Host && p.proxy == a.Proxy {
+			if p.challenge != "" && time.Now().Before(p.expires) && p.matchesAccount(a) {
 				out.State = "otp_required"
 				out.Challenge = p.challenge
 				out.Verification = importVerificationMethod(p.session)
@@ -140,4 +144,12 @@ func importVerificationMethod(s apple.AccountSession) string {
 		return "sms"
 	}
 	return "trusted_device"
+}
+
+// Bind to the identity proven by Apple during import, not to the separate
+// iCloud receiving address. Source metadata alone is not verification proof.
+func matchesImportAppleIdentity(a *Account, r ImportAppleLoginRequest) bool {
+	return a != nil && a.ImportSourceID == r.SourceID && a.VerifiedDSID != "" &&
+		normalizeIdentity(a.VerifiedAppleID) == r.AppleID &&
+		normalizeIdentity(a.RealEmail) == r.AppleID && a.ICloudEmail != ""
 }

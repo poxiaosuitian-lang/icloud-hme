@@ -26,7 +26,7 @@ func TestImportAppleLoginBindingAndChallenge(t *testing.T) {
 	<-m.appleDone
 	source := ImportSourceID("owner@example.test")
 	nonce := strings.Repeat("a", 64)
-	m.accounts["fixture"] = &Account{ID: "fixture", RealEmail: "owner@example.test", ImportSourceID: source, Host: "icloud.com"}
+	m.accounts["fixture"] = &Account{ID: "fixture", RealEmail: "owner@example.test", VerifiedAppleID: "owner@example.test", VerifiedDSID: "12345", ICloudEmail: "different@icloud.com", ImportSourceID: source, Host: "icloud.com"}
 	calls := 0
 	reject := false
 	m.appleClient, err = apple.NewClient(apple.Config{Transport: importLoginTransport(func(r *http.Request) (*http.Response, error) {
@@ -64,7 +64,7 @@ func TestImportAppleLoginBindingAndChallenge(t *testing.T) {
 	if _, err = m.ImportAppleLogin(context.Background(), bad); err != ImportConflict || calls != 0 {
 		t.Fatal("wrong identity reached Apple")
 	}
-	pending := pendingAppleLogin{session: apple.AccountSession{AppleID: req.AppleID, SCNT: "fixture-scnt", FrameID: "fixture-frame"}, expires: time.Now().Add(time.Minute), identity: req.AppleID, host: "icloud.com", challenge: nonce}
+	pending := pendingAppleLogin{session: apple.AccountSession{AppleID: req.AppleID, SCNT: "fixture-scnt", FrameID: "fixture-frame"}, expires: time.Now().Add(time.Minute), identity: req.AppleID, host: "icloud.com", challenge: nonce, importSourceID: source, verifiedDSID: "12345", mailbox: "different@icloud.com"}
 	m.applePending.Store("fixture", pending)
 	req.Operation = "verify"
 	req.Challenge = strings.Repeat("b", 64)
@@ -117,5 +117,70 @@ func TestImportAppleLoginBindingAndChallenge(t *testing.T) {
 	saved, _ := m.GetAccount("fixture")
 	if saved.AppleSession == nil || saved.AppleSession.APIKey != "fixture-private-api-key" {
 		t.Fatal("session was not saved")
+	}
+}
+
+func TestImportAppleLoginRequiresVerifiedBinding(t *testing.T) {
+	for _, mode := range []string{"source_only", "wrong_verified_id", "missing_dsid", "changed_identity", "duplicate", "valid_external_id"} {
+		t.Run(mode, func(t *testing.T) {
+			m := importManager(t)
+			m.appleCancel()
+			<-m.appleDone
+			id := "owner@example.test"
+			a := &Account{ID: "fixture", RealEmail: id, VerifiedAppleID: id, VerifiedDSID: "12345", ICloudEmail: "different@icloud.com", ImportSourceID: ImportSourceID(id), Host: "icloud.com"}
+			m.accounts[a.ID] = a
+			switch mode {
+			case "source_only":
+				a.VerifiedAppleID = ""
+				a.VerifiedDSID = ""
+			case "wrong_verified_id":
+				a.VerifiedAppleID = "other@example.test"
+			case "missing_dsid":
+				a.VerifiedDSID = ""
+			case "changed_identity":
+				a.RealEmail = "other@example.test"
+			case "duplicate":
+				duplicate := copyAccount(a)
+				duplicate.ID = "duplicate"
+				m.accounts[duplicate.ID] = duplicate
+			}
+			m.appleClient, _ = apple.NewClient(apple.Config{Transport: importLoginTransport(func(*http.Request) (*http.Response, error) {
+				t.Error("unexpected Apple call")
+				return nil, errors.New("unexpected")
+			})})
+			out, err := m.ImportAppleLogin(context.Background(), ImportAppleLoginRequest{Version: 1, SourceID: ImportSourceID(id), AppleID: id, Operation: "status"})
+			if mode == "valid_external_id" {
+				if err != nil || out.State != "login_required" {
+					t.Fatal("valid imported identity rejected", err)
+				}
+			} else if err != ImportConflict {
+				t.Fatal("unverified or conflicting binding accepted", err)
+			}
+		})
+	}
+}
+
+func TestIntegrationChallengeInvalidatedByReimport(t *testing.T) {
+	m := importManager(t)
+	m.appleCancel()
+	<-m.appleDone
+	id := "owner@example.test"
+	source := ImportSourceID(id)
+	nonce := strings.Repeat("a", 64)
+	a := &Account{ID: "fixture", RealEmail: id, VerifiedAppleID: id, VerifiedDSID: "12345", ICloudEmail: "different@icloud.com", ImportSourceID: source, Host: "icloud.com", ImportRevision: 2}
+	m.accounts[a.ID] = a
+	m.applePending.Store(a.ID, pendingAppleLogin{identity: id, host: a.Host, expires: time.Now().Add(time.Minute), challenge: nonce, importSourceID: source, verifiedDSID: a.VerifiedDSID, mailbox: a.ICloudEmail, importRevision: 1})
+	m.appleClient, _ = apple.NewClient(apple.Config{Transport: importLoginTransport(func(*http.Request) (*http.Response, error) {
+		t.Error("stale challenge reached Apple")
+		return nil, errors.New("unexpected")
+	})})
+	_, err := m.ImportAppleLogin(context.Background(), ImportAppleLoginRequest{Version: 1, SourceID: source, AppleID: id, Operation: "verify", Challenge: nonce, Code: "123456"})
+	if !errors.Is(err, ErrAppleOTPExpired) {
+		t.Fatal("old import challenge accepted", err)
+	}
+	stale := copyAccount(a)
+	stale.ImportRevision--
+	if err = m.saveAppleSession(stale, apple.AccountSession{APIKey: "stale-key"}); !errors.Is(err, ErrAppleSessionChanged) {
+		t.Fatal("stale login overwrote reimport", err)
 	}
 }

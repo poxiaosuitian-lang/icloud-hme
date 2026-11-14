@@ -1,9 +1,12 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/gin-gonic/gin"
+	"log"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -56,5 +59,42 @@ func TestImportAppleLoginDedicatedAuthorizationAndShape(t *testing.T) {
 	w := call(testImportToken, string(raw))
 	if w.Code != 200 || b.calls != 1 || strings.Contains(w.Body.String(), req.Password) || !strings.Contains(w.Body.String(), `"state":"ready"`) {
 		t.Fatal("login integration failed/leaked")
+	}
+}
+
+func TestImportAppleLoginCredentialsExcludedFromLogs(t *testing.T) {
+	var logs bytes.Buffer
+	previous := log.Writer()
+	oldWriter, oldError := gin.DefaultWriter, gin.DefaultErrorWriter
+	log.SetOutput(&logs)
+	gin.DefaultWriter = &logs
+	gin.DefaultErrorWriter = &logs
+	defer func() { log.SetOutput(previous); gin.DefaultWriter = oldWriter; gin.DefaultErrorWriter = oldError }()
+	b := &integrationLoginFixture{fakeBackend: &fakeBackend{}}
+	s := newWithBackend(b, Config{AdminPassword: "fixture-admin", ImportToken: testImportToken})
+	defer s.Close()
+	for i, operation := range []string{"login", "verify"} {
+		req := account.ImportAppleLoginRequest{Version: 1, SourceID: account.ImportSourceID("owner@example.test"), AppleID: "owner@example.test", Operation: operation}
+		if operation == "login" {
+			req.Password = "fixture-master-password"
+		} else {
+			req.Code = "654321"
+			req.Challenge = strings.Repeat("d", 64)
+		}
+		raw, _ := json.Marshal(req)
+		r := httptest.NewRequest("POST", "/api/integrations/appleservices/apple-login", bytes.NewReader(raw))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Authorization", "Bearer "+testImportToken)
+		r.RemoteAddr = fmt.Sprintf("192.0.2.%d:9999", i+1)
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		if w.Code != 200 {
+			t.Fatal("synthetic request failed", w.Code)
+		}
+		for _, secret := range []string{"fixture-master-password", "654321", strings.Repeat("d", 64), testImportToken} {
+			if strings.Contains(w.Body.String(), secret) || strings.Contains(logs.String(), secret) {
+				t.Fatal("credential appeared in response or log")
+			}
+		}
 	}
 }
