@@ -334,6 +334,27 @@ func (s *Server) allocateAlias(ctx context.Context, req allocateAliasRequest) (*
 		}
 		return &result, nil
 	}
+	// Use the durable ledger instead of backend iteration order or an in-memory
+	// cursor: first balance this caller, then total account load, then stable ID.
+	// Explicit account_id still pins the request to exactly one account. Imported
+	// reservations with a known account also count; unassigned history cannot.
+	callerCounts, totalCounts := map[string]int{}, map[string]int{}
+	for _, used := range store.claims {
+		totalCounts[used.AccountID]++
+		if callerGroup(used.CallerID) == callerID {
+			callerCounts[used.AccountID]++
+		}
+	}
+	sort.Slice(accounts, func(i, j int) bool {
+		a, b := accounts[i].ID, accounts[j].ID
+		if callerCounts[a] != callerCounts[b] {
+			return callerCounts[a] < callerCounts[b]
+		}
+		if totalCounts[a] != totalCounts[b] {
+			return totalCounts[a] < totalCounts[b]
+		}
+		return a < b
+	})
 	type pool struct {
 		account account.Summary
 		aliases []hme.Alias
@@ -363,12 +384,14 @@ func (s *Server) allocateAlias(ctx context.Context, req allocateAliasRequest) (*
 			}
 		}
 	}
-	if listErr != nil {
-		return nil, listErr // An unreadable pool is not an empty pool.
-	}
 	if !*req.AutoCreate {
+		if listErr != nil {
+			return nil, listErr // Unknown inventory is not reported as exhausted.
+		}
 		return nil, &BackendError{Status: http.StatusConflict, Code: "NO_AVAILABLE_ALIAS", Message: "当前调用商没有未使用别名，自动创建已关闭"}
 	}
+	// Only successfully read accounts are eligible for creation. One unreadable
+	// account must not prevent using healthy accounts, nor be treated as empty.
 	for _, pool := range pools {
 		if len(pool.aliases) >= *req.MaxAliases {
 			continue
@@ -381,24 +404,62 @@ func (s *Server) allocateAlias(ctx context.Context, req allocateAliasRequest) (*
 			}
 			label = prefix + "-" + uuid.NewString()[:12]
 		}
-		created, _, err := s.createAliasWithinCustomLimit(ctx, pool.account.ID, label, *req.MaxAliases)
-		if err != nil {
-			var be *BackendError
-			if errors.As(err, &be) && be.Code == "ALIAS_LIMIT_REACHED" {
-				continue
+		// API allocation and the scheduled/manual creators share this account lock.
+		// Re-read inventory under it: a background job may have replenished the
+		// pool since our first scan. Consume that inventory instead of overcreating.
+		result, err, terminal := func() (*aliasAllocation, error, bool) {
+			lock := s.aliasBatches.creationLock(pool.account.ID)
+			lock.Lock()
+			defer lock.Unlock()
+			if err := ctx.Err(); err != nil {
+				return nil, err, true
 			}
-			return nil, err
+			aliases, err := s.be.ListAliases(pool.account.ID)
+			if err != nil {
+				return nil, err, false // No creation sent; another account is safe.
+			}
+			for _, alias := range aliases {
+				if !alias.Active || alias.AnonymousID == "" {
+					continue
+				}
+				result, err := claim(pool.account.ID, alias, "existing", alias.CreatedAt)
+				if result != nil || err != nil {
+					return result, err, true
+				}
+			}
+			if len(aliases) >= *req.MaxAliases {
+				return nil, nil, false
+			}
+			if err := ctx.Err(); err != nil {
+				return nil, err, true
+			}
+			created, err := s.be.CreateAlias(pool.account.ID, label)
+			if err != nil {
+				return nil, err, true // Never retry an ambiguous creation elsewhere.
+			}
+			if created == nil || created.Email == "" {
+				return nil, &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "创建邮箱未返回有效结果，请刷新别名列表后重试"}, true
+			}
+			result, err := claim(pool.account.ID, hme.Alias{Email: created.Email, Label: created.Label}, "created", created.CreatedAt)
+			if err != nil {
+				return nil, err, true
+			}
+			if result == nil {
+				return nil, &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "创建结果不是可用的新别名，主邮箱不会被使用"}, true
+			}
+			return result, nil, true
+		}()
+		if terminal {
+			return result, err
 		}
-		result, err := claim(pool.account.ID, hme.Alias{Email: created.Email, Label: created.Label}, "created", created.CreatedAt)
-		if err != nil {
-			return nil, err
+		if err != nil && listErr == nil {
+			listErr = err
 		}
-		if result == nil {
-			return nil, &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "创建结果不是可用的新别名，主邮箱不会被使用"}
-		}
-		return result, nil
 	}
-	return nil, &BackendError{Status: http.StatusConflict, Code: "ALIAS_LIMIT_REACHED", Message: fmt.Sprintf("当前调用商没有未使用别名，主号已达 %d 个别名上限（含已停用别名）", *req.MaxAliases)}
+	if listErr != nil {
+		return nil, listErr
+	}
+	return nil, &BackendError{Status: http.StatusConflict, Code: "ALIAS_LIMIT_REACHED", Message: fmt.Sprintf("所选账号均无可分配别名或已达 %d 个别名上限（含已停用别名）", *req.MaxAliases)}
 }
 
 func (s *Server) allocateAliasHandler(c *gin.Context) {
@@ -431,6 +492,8 @@ func (s *Server) aliasUsageHandler(c *gin.Context) {
 	defer s.aliasUsage.mu.Unlock()
 	counts := make(map[string]int)
 	emails := make(map[string]bool)
+	accountCounts := make(map[string]int)
+	accountEmails := make(map[string]map[string]bool)
 	used := 0
 	for _, claim := range s.aliasUsage.claims {
 		group := callerGroup(claim.CallerID)
@@ -439,6 +502,11 @@ func (s *Server) aliasUsageHandler(c *gin.Context) {
 		}
 		counts[group]++
 		emails[claim.Email] = true
+		accountCounts[claim.AccountID]++
+		if accountEmails[claim.AccountID] == nil {
+			accountEmails[claim.AccountID] = make(map[string]bool)
+		}
+		accountEmails[claim.AccountID][claim.Email] = true
 		used++
 	}
 	groups := make([]string, 0, len(counts))
@@ -450,7 +518,34 @@ func (s *Server) aliasUsageHandler(c *gin.Context) {
 	for _, group := range groups {
 		callers = append(callers, gin.H{"caller_id": group, "used_count": counts[group]})
 	}
-	data := gin.H{"used_count": used, "unique_email_count": len(emails), "callers": callers}
+	// Include zero-use current accounts and historical/deleted/unassigned groups.
+	known := make(map[string]account.Summary)
+	for _, acc := range s.be.ListAccounts() {
+		known[acc.ID] = acc
+		if _, exists := accountCounts[acc.ID]; !exists {
+			accountCounts[acc.ID] = 0
+		}
+	}
+	ids := make([]string, 0, len(accountCounts))
+	for id := range accountCounts {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	accountUsage := make([]gin.H, 0, len(ids))
+	for _, id := range ids {
+		acc, exists := known[id]
+		name := acc.Name
+		if !exists {
+			name = "已移除账号"
+			if id == "" {
+				name = "未关联账号的历史记录"
+			}
+		}
+		accountUsage = append(accountUsage, gin.H{"account_id": id, "name": name,
+			"used_count": accountCounts[id], "unique_email_count": len(accountEmails[id]), "available": exists})
+	}
+	data := gin.H{"used_count": used, "unique_email_count": len(emails), "callers": callers, "accounts": accountUsage,
+		"allocation_policy": "least_used_existing_first"}
 	if scoped {
 		data["caller_id"] = callerID
 	}

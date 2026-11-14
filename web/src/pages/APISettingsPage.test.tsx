@@ -118,3 +118,26 @@ it('可刷新调用商统计，失败不清空已读取的记录', async () => {
   expect(screen.getByText('vendor-b')).toBeInTheDocument()
   expect(screen.getByRole('button', { name: '刷新调用商统计' })).toBeEnabled()
 })
+
+
+it('多账号统计与调用示例按分配结果选择收件账号', async () => {
+  server.use(http.get('/api/settings/api/usage', () => HttpResponse.json({ success: true, data: {
+    used_count: 3, unique_email_count: 3, callers: [], accounts: [
+      { account_id: 'acc_1', name: '主账号', used_count: 2, unique_email_count: 2, available: true },
+      { account_id: 'acc_2', name: '备用账号', used_count: 1, unique_email_count: 1, available: true },
+    ],
+  } })))
+  renderPage()
+  const table = await screen.findByRole('table', { name: '账号分配统计' })
+  expect(within(table).getByText('主账号')).toBeInTheDocument()
+  expect(within(table).getByText('备用账号')).toBeInTheDocument()
+  expect(within(table).getAllByRole('row')).toHaveLength(3)
+  expect(screen.getByText(/传入 account_id 时仅使用指定账号/)).toBeInTheDocument()
+  const example = document.querySelector('.api-code')?.textContent ?? ''
+  expect(example).toContain("jq -er '.data.account_id'")
+  expect(example).toContain("jq -er '.data.email'")
+  expect(example).toContain('account_id=$ACCOUNT_ID')
+  expect(example).toContain('alias=$ALIAS')
+  expect(example).toContain('request_id')
+  expect(example).not.toContain('"account_id":"$ACCOUNT_ID"')
+})

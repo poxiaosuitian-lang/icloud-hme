@@ -5,7 +5,8 @@ import { useToast } from '../components/ToastProvider'
 import { copyText } from '../utils/clipboard'
 
 interface Settings { enabled: boolean; has_token: boolean; base_path: string }
-interface Usage { used_count: number; unique_email_count: number; callers: { caller_id: string; used_count: number }[] }
+interface AccountUsage { account_id: string; name: string; used_count: number; unique_email_count: number; available: boolean }
+interface Usage { used_count: number; unique_email_count: number; callers: { caller_id: string; used_count: number }[]; accounts?: AccountUsage[] }
 
 export default function APISettingsPage() {
   const [settings, setSettings] = useState<Settings | null>(null)
@@ -73,7 +74,28 @@ export default function APISettingsPage() {
   const baseURL = `${window.location.origin}${settings?.base_path ?? '/api/v1'}`
   const normalizedCallerID = callerID.trim().toLowerCase() || 'default'
   const callerValid = /^[a-z0-9_.-]{1,64}$/.test(normalizedCallerID)
-  const example = `# 先替换 TOKEN、ACCOUNT_ID，并为每个调用商设置固定的 CALLER_ID\nTOKEN='TOKEN'\nBASE_URL='${baseURL}'\nACCOUNT_ID='ACCOUNT_ID'\nCALLER_ID='${callerValid ? normalizedCallerID : 'CALLER_ID'}'\n\n# 查询账号 ID\ncurl "$BASE_URL/accounts" -H "Authorization: Bearer $TOKEN"\n\n# 分配别名：优先该调用商未用过的已有别名，耗尽后才创建；返回 data.email\ncurl "$BASE_URL/aliases" \\\n  -H "Authorization: Bearer $TOKEN" \\\n  -H 'Content-Type: application/json' \\\n  -d "{\\"account_id\\":\\"$ACCOUNT_ID\\",\\"caller_id\\":\\"$CALLER_ID\\",\\"label\\":\\"API 创建\\"}"\n\n# 查询该别名收到的邮件（INBOX + Junk）\ncurl -G "$BASE_URL/inbox" \\\n  -H "Authorization: Bearer $TOKEN" \\\n  --data-urlencode "account_id=$ACCOUNT_ID" \\\n  --data-urlencode 'alias=隐藏邮箱地址' \\\n  --data-urlencode 'limit=20' --data-urlencode 'days=7'\n\n# 读取正文（使用 IMAP 返回的邮件 ID）\ncurl -G "$BASE_URL/inbox/MESSAGE_ID" \\\n  -H "Authorization: Bearer $TOKEN" \\\n  --data-urlencode "account_id=$ACCOUNT_ID"`
+  const example = `# 替换 TOKEN；需安装 jq。每个调用商使用固定 CALLER_ID。
+TOKEN='TOKEN'
+BASE_URL='${baseURL}'
+CALLER_ID='${callerValid ? normalizedCallerID : 'CALLER_ID'}'
+# 每次新分配换一个 REQUEST_ID；网络重试沿用同一 ID 和参数。
+REQUEST_ID='REQUEST_ID'
+
+# 不传 account_id：多账号均衡分配，优先已有邮箱，耗尽后才按需新建。
+# 只取库存、不触发创建时，将 auto_create 改为 false。
+RESULT=$(curl --fail-with-body "$BASE_URL/aliases" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d @- <<JSON
+{"caller_id":"$CALLER_ID","request_id":"$REQUEST_ID","auto_create":true}
+JSON
+) || exit 1
+ACCOUNT_ID=$(printf '%s' "$RESULT" | jq -er '.data.account_id') || exit 1
+ALIAS=$(printf '%s' "$RESULT" | jq -er '.data.email') || exit 1
+
+# 必须使用本次返回的 account_id + email 收件，不能固定为第一个账号。
+# 查询该别名收到的邮件（INBOX + Junk）
+curl -G "$BASE_URL/inbox" -H "Authorization: Bearer $TOKEN" --data-urlencode "account_id=$ACCOUNT_ID" --data-urlencode "alias=$ALIAS" --data-urlencode 'limit=20' --data-urlencode 'days=7'
+
+# 读取正文（使用 IMAP 返回的完整邮件 ID；Junk: 前缀须 URL 编码）
+curl -G "$BASE_URL/inbox/MESSAGE_ID" -H "Authorization: Bearer $TOKEN" --data-urlencode "account_id=$ACCOUNT_ID"`
   async function copy(value: string) { show(await copyText(value) ? '已复制' : '复制失败，请手动选择复制') }
 
   return <section>
@@ -128,11 +150,24 @@ export default function APISettingsPage() {
         </>}
       </div>
       <div className="card api-settings-card">
+        <h3>多账号分配协调</h3>
+        <p className="hint">不传 account_id 时，优先使用当前调用商历史分配较少的账号；相同时参考全局分配数量，再按账号 ID 排序。先找已有可用邮箱，再按需新建；某个账号读取失败会尝试其他账号，读取失败的账号不会被当作空库存创建。</p>
+        <p className="hint">传入 account_id 时仅使用指定账号，不自动切换。每次取邮箱后，请保存返回的 account_id 和 email，收件及正文查询都使用该 account_id，避免多个 Apple 账号之间串号。</p>
+        <p className="hint">自动创建结果不明时立即返回错误，不跨账号盲目重试。auto_create:false 表示只分配已有库存；统计为历史分配记录，不代表实时剩余库存或账号在线状态。</p>
+        {usage?.accounts && <div className="table-wrap"><table aria-label="账号分配统计">
+          <thead><tr><th>账号</th><th>分配记录</th><th>不同邮箱</th></tr></thead>
+          <tbody>{usage.accounts.map((account) => <tr key={account.account_id || 'unassigned'}>
+            <td>{account.name || account.account_id}<br /><small className="hint">{account.account_id || '未关联账号'}{!account.available && account.account_id ? '（历史记录）' : ''}</small></td>
+            <td>{account.used_count}</td><td>{account.unique_email_count}</td>
+          </tr>)}</tbody>
+        </table></div>}
+      </div>
+      <div className="card api-settings-card">
         <h3>接口与调用示例</h3>
         <ul>
           <li><code>GET /accounts</code>：查询账号 ID</li>
           <li><code>GET /aliases?account_id=ACCOUNT_ID</code>：查询别名列表</li>
-          <li><code>POST /aliases</code>：传 caller_id，优先取用该调用商未用过的已有别名，耗尽后按需创建</li>
+          <li><code>POST /aliases</code>：传 caller_id，不传 account_id 时多账号均衡分配；返回 account_id + email</li>
           <li><code>GET /aliases/usage?caller_id=CALLER_ID</code>：查询该调用商的占用数量；POST 同路径携带 caller_id 可导入对应历史记录</li>
           <li><code>GET /inbox</code>：按账号、别名查询邮件摘要（INBOX + Junk）</li>
           <li><code>GET /inbox/MESSAGE_ID</code>：读取正文（需配置 IMAP / App 密码）</li>
