@@ -85,6 +85,8 @@ func (s *Server) initializeDualLocked(job *aliasBatchJob, req aliasBatchRequest)
 	r.replan(now, false)
 	job.dual = r
 	s.aliasBatches.dualRecords[req.AccountID] = r
+	job.state.Continuous = req.Continuous
+	job.state.Count = req.Count
 	job.state.Policy = "upstream_19_4"
 	job.state.IntervalSeconds = 120
 	job.state.CooldownMinutes = 60
@@ -94,8 +96,18 @@ func (s *Server) initializeDualLocked(job *aliasBatchJob, req aliasBatchRequest)
 	return s.checkpointDualLocked(job)
 }
 func validateDualRecord(id string, r *dualScheduleRecord) error {
-	if r == nil || r.Request.AccountID != id || r.Request.Channel != channelAuto || r.State.AccountID != id || r.State.Channel != channelAuto || r.State.ID == "" || r.Request.Count < 1 || r.Request.Count > MaxAliases || r.State.Created < 0 || r.State.Created > r.Request.Count || len(r.Plan) != dualSlots || r.Slot < 0 || r.Slot >= dualSlots {
+	if r == nil || r.Request.AccountID != id || r.Request.Channel != channelAuto || r.State.AccountID != id || r.State.Channel != channelAuto || r.State.ID == "" || r.State.Created < 0 || len(r.Plan) != dualSlots || r.Slot < 0 || r.Slot >= dualSlots {
 		return fmt.Errorf("invalid dual schedule record")
+	}
+	if r.Request.Continuous != r.State.Continuous || r.State.Count != r.Request.Count {
+		return fmt.Errorf("inconsistent dual schedule mode")
+	}
+	if r.Request.Continuous {
+		if r.Request.Count != 0 {
+			return fmt.Errorf("continuous schedule must not have a target count")
+		}
+	} else if r.Request.Count < 1 || r.Request.Count > MaxAliases || r.State.Created > r.Request.Count {
+		return fmt.Errorf("invalid finite schedule target")
 	}
 	for i, t := range r.Plan {
 		if t.IsZero() || i > 0 && t.Sub(r.Plan[i-1]) < dualMinimumInterval {

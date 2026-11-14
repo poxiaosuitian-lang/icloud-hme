@@ -38,8 +38,9 @@ HTTP JSON API，所有接口返回统一格式：
 ## 自动注册任务（管理员会话接口）
 
 - `POST /api/alias-batch`：启动任务，需管理员会话及 `X-CSRF-Token`。
-  JSON：`account_id`、`count`（1–750 的整数）、`interval_seconds`（1–86400 秒，支持小数）、`cooldown_minutes`（可选，1–1440 的整数，省略默认 60）、`label_prefix`（可选，最多 170 字符）。
-  校验已有别名后的剩余额度，数量超额返回 `400 ALIAS_QUOTA_EXCEEDED`，已有 750 个返回 `409 ALIAS_LIMIT_REACHED`。
+  单通道 JSON：`account_id`、`count`（1–750 的整数）、`interval_seconds`（1–86400 秒，支持小数）、`cooldown_minutes`（可选，1–1440 的整数，省略默认 60）、`label_prefix`（可选，最多 170 字符）。
+  单通道校验已有别名后的剩余额度，数量超额返回 `400 ALIAS_QUOTA_EXCEEDED`，已有 750 个返回 `409 ALIAS_LIMIT_REACHED`。
+  `channel:"auto"` 固定持续运行：`continuous:true,count:0`，数量与间隔设置由服务端规范化；满额可启动等待容量。
   同账号有运行中、冷却中或停止中任务返回 `409 BATCH_ALREADY_RUNNING`。成功返回 `202` 和任务状态。
 - `GET /api/alias-batch?account_id=ACCOUNT_ID`：查询该账号最近任务，无任务时 `data: null`；未知账号返回 404。
 - `POST /api/alias-batch/stop`：停止任务，JSON：`account_id`、`job_id`（任务状态的 `id`），需会话和 CSRF。
@@ -552,11 +553,12 @@ curl -b cookies.txt "$BASE/api/inbox?account_id=acc_1&limit=10"
 - `auto`：采用 icloud-mail 提交 `886eb52` 的自动计划策略，不再一新一旧轮流创建。
 
 ```json
-{"account_id":"ACCOUNT_ID","count":23,"label_prefix":"自动注册","channel":"auto"}
+{"account_id":"ACCOUNT_ID","continuous":true,"label_prefix":"自动注册","channel":"auto"}
 ```
 
 `auto` 固定策略（客户端传入的 `interval_seconds` / `cooldown_minutes` 被规范为 120 / 60，不是可调节的加速参数）：
 
+- 所有新启动的 auto 任务固定 `continuous:true,count:0`，忽略旧客户端传入的 count。取消目标数量，每小时持续循环，手动停止前不因累计数量结束。单通道不支持 `continuous:true`。
 - 一小时 23 个随机分布时隙，间隔至少 2 分钟，最后一个时隙位于计划起点后一小时；首次也等待计划时间。
 - 新通道 19 个，旧通道 4 个。旧通道为第 6、12、18、23 个时隙。
 - 新通道未登录或会话被拒绝时，降级为旧通道每小时 5 个分散时隙（第 5、10、14、19、23 个）。新登录恢复后自动切回 19+4。
@@ -566,11 +568,11 @@ curl -b cookies.txt "$BASE/api/inbox?account_id=acc_1&limit=10"
 - 逾期超过 2 分钟的计划重新生成，不集中补发。慢请求不会压缩后续最小间隔。
 - 这些数字是参考项目的本地调度上限，不是 Apple 公布或保证的配额。
 
-状态额外返回 `policy: "upstream_19_4"`、`schedule_mode: "dual" | "web_only" | "offline"`、`schedule_slot`（下一时隙，1–23），以及每通道计数与冷却状态 `channels`。
+状态额外返回 `continuous:true`、`count:0`、累计 `created`（可以超过 750，账号当前总数仍受限）及 `policy: "upstream_19_4"`、`schedule_mode: "dual" | "web_only" | "offline"`、`schedule_slot`（下一时隙，1–23），以及每通道计数与冷却状态 `channels`。
 
 计划、进度、尝试账本和冷却原子写入 `data/dual-schedules.json`（0600）。重启恢复尚未完成的双通道任务；手动停止不会恢复；重新启动任务也不会清空已用预算。重启前有未确认的在途创建时暂停为 `ALIAS_CONFIRMATION_REQUIRED`，核对后再启动，不自动重复创建。持久化失败时停止，未提交账本前不会发起新的创建。
 
-保留本应用的 `count` 目标数量和 750 个总数检查；没有迁移参考项目的 PostgreSQL、无限补库计划或邮箱池。单通道任务仍不跨重启恢复。手动 `/api/create` 和服务 API 的原有旧通道行为不变，与双通道自动计划账本分开。
+持续双通道保留 750 个当前总数检查；容量已满时保持 `cooling_down` 任务，每小时只核对一次，释放容量后恢复，不自动删除别名。持续运行不绕过限流或账号要求；创建结果不确定、持久化失败等情况仍暂停核对。旧文件中不带 continuous 的有限数量任务仍按原 count 恢复，不擅自扩大原授权范围；新启动 auto 才切为持续模式。没有迁移参考项目的 PostgreSQL 或邮箱池。单通道任务仍不跨重启恢复。手动 `/api/create` 和服务 API 的原有旧通道行为不变，与双通道自动计划账本分开。
 
 `POST /api/accounts/:id/apple-login`：管理员登录态 + CSRF，首次 `{"password":"PASSWORD"}`；若返回 `OTP_REQUIRED`，再提交 `{"otp_code":"123456"}`。待验证会话仅存内存，5 分钟过期；密码不落盘。新通道会话与旧 Cookie 独立持久化，自动续期；公开摘要仅返回 `has_apple_session` 等非秘密信息。
 

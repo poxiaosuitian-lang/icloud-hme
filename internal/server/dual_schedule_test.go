@@ -321,7 +321,7 @@ func TestDualCorruptPersistenceFailsClosed(t *testing.T) {
 
 func TestDualHTTPStartNormalizesPolicyAndStopIsDurable(t *testing.T) {
 	b := &channelFake{}
-	b.accounts = []account.Summary{{ID: "acc_1", HasCookies: true}}
+	b.accounts = []account.Summary{{ID: "acc_1", HasCookies: true, AliasTotal: MaxAliases}}
 	path := filepath.Join(t.TempDir(), "dual.json")
 	s := newWithBackend(b, Config{AdminPassword: "admin-pass-2026-strong", SessionTTL: time.Hour, DualScheduleFile: path})
 	ts := httptest.NewServer(s.Handler())
@@ -346,7 +346,7 @@ func TestDualHTTPStartNormalizesPolicyAndStopIsDurable(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := envelope.Data
-	if state.Policy != "upstream_19_4" || state.IntervalSeconds != 120 || state.CooldownMinutes != 60 || state.NextRunAt == nil || !state.NextRunAt.After(time.Now().Add(119*time.Second)) {
+	if !state.Continuous || state.Count != 0 || state.Policy != "upstream_19_4" || state.IntervalSeconds != 120 || state.CooldownMinutes != 60 || state.NextRunAt == nil || !state.NextRunAt.After(time.Now().Add(119*time.Second)) {
 		t.Fatal(state)
 	}
 	if b.count() != 0 {

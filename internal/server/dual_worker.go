@@ -217,6 +217,16 @@ func (s *Server) processDualSlot(ctx context.Context, job *aliasBatchJob) (time.
 			// Shared read-only failures consume this deadline, not a fresh generation.
 		case "ALIAS_LIMIT_REACHED":
 			job.state.AliasTotal = total
+			if r.Request.Continuous {
+				// Never delete aliases or stop the opt-in at capacity. Recheck
+				// the authoritative directory hourly, without generating.
+				until := observed.Add(time.Hour)
+				r.Paused["all"] = laterDualTime(r.Paused["all"], until)
+				r.replan(r.Paused["all"], true)
+				job.state.Status = "cooling_down"
+				job.state.Message = "别名容量已满，保留持续计划；一小时后核对，释放容量后自动恢复"
+				break
+			}
 			s.finishDualLocked(job, "limit_reached", e.Code, e.Message)
 			return 0, true
 		default:
@@ -231,7 +241,7 @@ func (s *Server) processDualSlot(ctx context.Context, job *aliasBatchJob) (time.
 		s.finishDualLocked(job, "stopped", "", "已停止自动注册")
 		return 0, true
 	}
-	if job.state.Created >= r.Request.Count {
+	if !r.Request.Continuous && job.state.Created >= r.Request.Count {
 		s.finishDualLocked(job, "completed", "", "本次自动注册已完成")
 		return 0, true
 	}

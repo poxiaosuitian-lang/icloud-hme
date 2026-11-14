@@ -89,10 +89,11 @@ export default function AutoAliasRegistration({ accountId, aliasTotal, onAliases
 
   async function start() {
     if (busy || active) return
-    const quantity = Number(count)
+    const continuous = channel === 'auto'
+    const quantity = continuous ? 0 : Number(count)
     const seconds = channel === 'auto' ? 120 : Number(interval)
     const cooldown = channel === 'auto' ? 60 : Number(cooldownMinutes)
-    if (!Number.isInteger(quantity) || quantity < 1 || quantity > remaining) {
+    if (!continuous && (!Number.isInteger(quantity) || quantity < 1 || quantity > remaining)) {
       setError(`本次注册数量需为 1-${remaining} 的整数`)
       return
     }
@@ -110,7 +111,7 @@ export default function AutoAliasRegistration({ accountId, aliasTotal, onAliases
     try {
       const next = await request<AliasBatchStatus>('/api/alias-batch', {
         method: 'POST',
-        body: { channel, account_id: accountId, count: quantity, interval_seconds: seconds, cooldown_minutes: cooldown, label_prefix: labelPrefix.trim() },
+        body: { ...(continuous ? { continuous: true } : {}), channel, account_id: accountId, count: quantity, interval_seconds: seconds, cooldown_minutes: cooldown, label_prefix: labelPrefix.trim() },
       })
       applyBatch(next)
       setOpen(false)
@@ -150,7 +151,7 @@ export default function AutoAliasRegistration({ accountId, aliasTotal, onAliases
           <p className="hint">当前 {aliasTotal} / {MAX_ALIASES} 个（含已停用别名），还可注册 {remaining} 个。</p>
         </div>
         <div className="alias-batch-actions">
-          <button className="primary" disabled={busy || active || statusLoading || !!pollError || remaining === 0} onClick={openSettings}>
+          <button className="primary" disabled={busy || active || statusLoading || !!pollError} onClick={openSettings}>
             <IconPlus size={16} /> 自动注册别名
           </button>
           <button
@@ -166,7 +167,7 @@ export default function AutoAliasRegistration({ accountId, aliasTotal, onAliases
       {batch && (
         <div className="alias-batch-progress" role="status" aria-live="polite">
           <strong>{statusLabels[batch.status]}</strong>
-          <span>本次已注册 {batch.created} / {batch.count} 个；{batch.channel === 'auto' ? '按小时错峰计划运行。' : `每个间隔 ${batch.interval_seconds} 秒。`}</span>
+          <span>{batch.continuous ? `累计已注册 ${batch.created} 个；持续运行，直到手动停止。` : `本次已注册 ${batch.created} / ${batch.count} 个；`}{batch.channel === 'auto' ? '按小时错峰计划运行。' : `每个间隔 ${batch.interval_seconds} 秒。`}</span>
           {batch.channel === 'auto' ? <>
             <span>每小时 23 个计划时隙：新通道 19 个、旧通道 4 个；最小间隔 120 秒，不补发错过的时隙。</span>
             <span>当前：{batch.schedule_mode === 'web_only' ? '降级旧通道，每小时 5 个' : batch.schedule_mode === 'offline' ? '等待旧通道登录，保留计划' : '19+4 双通道计划'}{batch.schedule_slot ? `；下一个时隙 ${batch.schedule_slot}/23` : ''}。</span>
@@ -177,10 +178,10 @@ export default function AutoAliasRegistration({ accountId, aliasTotal, onAliases
             {item.disabled ? '；需要重新登录或处理账号状态' : item.next_run_at ? `；冷却至 ${new Date(item.next_run_at).toLocaleString()}` : '；可用'}
             {item.message && `；${item.message}`}
           </span>)}
-          <progress aria-label="自动注册进度" value={batch.created} max={batch.count} />
+          {!batch.continuous && <progress aria-label="自动注册进度" value={batch.created} max={batch.count} />}
           {batch.last_email && <span>最新别名：{batch.last_email}</span>}
           {batch.next_run_at && <span>{batch.status === 'cooling_down' ? '冷却结束：' : '下次注册：'}{new Date(batch.next_run_at).toLocaleString()}</span>}
-          {!!batch.cooldown_count && <span>已进入冷却 {batch.cooldown_count} 次；剩余 {Math.max(0, batch.count - batch.created)} 个。</span>}
+          {!!batch.cooldown_count && <span>已进入冷却 {batch.cooldown_count} 次；{batch.continuous ? '冷却后继续持续计划。' : `剩余 ${Math.max(0, batch.count - batch.created)} 个。`}</span>}
           {batch.message && <span>{batch.message}</span>}
           {active && <span className="hint">关闭网页仍会继续；停止后不再发起新注册，正在执行的一次可能仍会完成。</span>}
         </div>
@@ -195,17 +196,17 @@ export default function AutoAliasRegistration({ accountId, aliasTotal, onAliases
           <select id="batch-channel" value={channel} disabled={busy} onChange={(event) => setChannel(event.target.value as CreationChannel)}>
             <option value="icloud_web">旧通道 · iCloud Web</option>
             <option value="apple_account">新通道 · Apple Account</option>
-            <option value="auto">新旧双通道 · 原项目 19+4 小时计划</option>
+            <option value="auto">新旧双通道 · 每小时 19+4 持续运行</option>
           </select>
           <p className="hint">新通道需先在账号页面独立登录；创建时需要有效的 iCloud Web 会话核对总数。19+4 是原项目的本地调度上限，不是 Apple 公布或保证的额度。</p>
-          {channel === 'auto' && <p className="hint">一小时随机分布 23 个时隙，每次至少间隔 2 分钟，首次也等待计划时间。新通道未登录或失效时降级为旧通道 5 个分散时隙；恢复登录后自动切回双通道。不会把冷却通道的时隙转给另一通道。</p>}
+          {channel === 'auto' && <p className="hint">持续运行直到手动停止，不设置本次注册数量。一小时随机分布 23 个时隙，每次至少间隔 2 分钟，首次也等待计划时间。新通道未登录或失效时降级为旧通道 5 个分散时隙；恢复登录后自动切回双通道。不会把冷却通道的时隙转给另一通道。</p>}
         </div>
+        {channel !== 'auto' && <>
         <div className="form-field">
           <label htmlFor="batch-count">本次注册数量</label>
           <input id="batch-count" type="number" min={1} max={remaining} step={1} value={count}
             disabled={busy} onChange={(event) => setCount(event.target.value)} />
         </div>
-        {channel !== 'auto' && <>
         <div className="form-field">
           <label htmlFor="batch-interval">每个间隔（秒）</label>
           <input id="batch-interval" type="number" min={1} max={86400} step="any" value={interval}
@@ -225,10 +226,10 @@ export default function AutoAliasRegistration({ accountId, aliasTotal, onAliases
             onChange={(event) => setLabelPrefix(event.target.value)} placeholder="自动注册" />
           <p className="hint">自动附加任务编号和序号；留空使用「自动注册」。</p>
         </div>
-        {channel === 'auto' ? <p className="hint">限流默认冷却至少 60 分钟，尊重更长的 Retry-After；单通道限流不推迟另一通道计划，公共请求限流则整体等待。滚动小时预算、计划和进度会保存，容器重启后继续；重启前正在创建且结果不确定时暂停核对。手动停止不会自动恢复。</p> : <p className="hint">遇到限流或临时错误也按设定时长冷却，连续失败逐次加倍至 120 分钟（设置超过 120 分钟则保留原值）；上游要求更久则按上游时间等待。运行中或冷却中均可停止。Cookie 失效或额度耗尽会停止；容器重启后需手动重新开始。</p>}
+        {channel === 'auto' ? <p className="hint">限流默认冷却至少 60 分钟，尊重更长的 Retry-After；单通道限流不推迟另一通道计划，公共请求限流则整体等待。滚动小时预算、计划和进度会保存，容器重启后继续；达到容量上限时每小时核对一次，释放容量后自动恢复，不会自动删除别名。重启前正在创建且结果不确定时暂停核对，避免重复创建。手动停止不会自动恢复。</p> : <p className="hint">遇到限流或临时错误也按设定时长冷却，连续失败逐次加倍至 120 分钟（设置超过 120 分钟则保留原值）；上游要求更久则按上游时间等待。运行中或冷却中均可停止。Cookie 失效或额度耗尽会停止；容器重启后需手动重新开始。</p>}
         <div className="form-actions">
           <button disabled={busy} onClick={() => setOpen(false)}>取消</button>
-          <button className="primary" disabled={busy || active || remaining === 0} onClick={() => void start()}>
+          <button className="primary" disabled={busy || active || (channel !== 'auto' && remaining === 0)} onClick={() => void start()}>
             {busy ? '启动中…' : '开始注册'}
           </button>
         </div>

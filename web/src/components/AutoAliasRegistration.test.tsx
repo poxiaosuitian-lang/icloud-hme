@@ -69,9 +69,12 @@ describe('AutoAliasRegistration', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('1-1 的整数')
   })
 
-  it('750 个别名时禁用自动注册', async () => {
+  it('750 个别名时仅允许启动持续双通道等待容量', async () => {
     renderRegistration(750)
-    expect(await screen.findByRole('button', { name: '自动注册别名' })).toBeDisabled()
+    await openDialog()
+    expect(screen.getByRole('button', { name: '开始注册' })).toBeDisabled()
+    await userEvent.selectOptions(screen.getByLabelText('创建通道'), 'auto')
+    expect(screen.getByRole('button', { name: '开始注册' })).toBeEnabled()
     expect(screen.getByText(/还可注册 0 个/)).toBeInTheDocument()
   })
 
@@ -290,7 +293,7 @@ it('可选择新旧双通道并将模式提交给后端', async () => {
     http.get('/api/alias-batch', () => HttpResponse.json({ success: true, data: job })),
     http.post('/api/alias-batch', async ({ request }) => {
       body = await request.json() as Record<string, unknown>
-      job = { ...running, channel: 'auto' }
+      job = { ...running, channel: 'auto', continuous: true, count: 0 }
       return HttpResponse.json({ success: true, data: job }, { status: 202 })
     }),
   )
@@ -302,6 +305,9 @@ it('可选择新旧双通道并将模式提交给后端', async () => {
   expect(screen.getByText(/首次也等待计划时间/)).toBeInTheDocument()
   await userEvent.click(screen.getByRole('button', { name: '开始注册' }))
   await waitFor(() => expect(body.channel).toBe('auto'))
+  expect(body.continuous).toBe(true)
+  expect(body.count).toBe(0)
+  expect(screen.queryByLabelText('本次注册数量')).not.toBeInTheDocument()
   expect(body.interval_seconds).toBe(120)
   expect(body.cooldown_minutes).toBe(60)
   expect(await screen.findByText('创建模式：新旧双通道')).toBeInTheDocument()
@@ -317,4 +323,31 @@ it('双通道状态展示原项目小时计划和降级状态，不显示每批�
   expect(await screen.findByText(/降级旧通道，每小时 5 个/)).toBeInTheDocument()
   expect(screen.getByText(/每小时 23 个计划时隙/)).toBeInTheDocument()
   expect(screen.queryByText(/每批 5 个/)).not.toBeInTheDocument()
+})
+
+it('持续任务刷新后展示累计数、冷却和停止，不显示总量进度', async () => {
+ setCSRFToken('csrf-test'); server.resetHandlers()
+ let job: AliasBatchStatus = {...running,channel:'auto',continuous:true,count:0,created:1001,status:'cooling_down',cooldown_count:2}
+ let startCalls=0
+ server.use(
+  http.get('/api/alias-batch',()=>HttpResponse.json({success:true,data:job})),
+  http.post('/api/alias-batch',()=>{startCalls++;return HttpResponse.json({success:false})}),
+  http.post('/api/alias-batch/stop',()=>{job={...job,status:'stopped'};return HttpResponse.json({success:true,data:job})}),
+ )
+ renderRegistration()
+ expect(await screen.findByText(/累计已注册 1001 个；持续运行，直到手动停止/)).toBeInTheDocument()
+ expect(screen.queryByRole('progressbar')).not.toBeInTheDocument()
+ expect(screen.queryByText(/剩余 0 个/)).not.toBeInTheDocument()
+ expect(screen.getByText(/冷却后继续持续计划/)).toBeInTheDocument()
+ await userEvent.click(screen.getByRole('button',{name:'停止注册任务'}))
+ expect(await screen.findByText('已停止')).toBeInTheDocument()
+ expect(startCalls).toBe(0)
+})
+
+it('从双通道切回旧通道恢复有限数量输入',async()=>{
+ setCSRFToken('csrf-test');server.resetHandlers();renderRegistration();await openDialog()
+ await userEvent.selectOptions(screen.getByLabelText('创建通道'),'auto')
+ expect(screen.queryByLabelText('本次注册数量')).not.toBeInTheDocument()
+ await userEvent.selectOptions(screen.getByLabelText('创建通道'),'icloud_web')
+ expect(screen.getByLabelText('本次注册数量')).toHaveValue(10)
 })

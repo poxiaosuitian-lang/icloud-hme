@@ -22,6 +22,7 @@ const aliasBatchSize = 5
 const defaultCooldownMinutes = 60
 
 type aliasBatchRequest struct {
+	Continuous      bool    `json:"continuous"`
 	Channel         string  `json:"channel"`
 	AccountID       string  `json:"account_id"`
 	Count           int     `json:"count"`
@@ -31,6 +32,7 @@ type aliasBatchRequest struct {
 }
 
 type aliasBatchStatus struct {
+	Continuous      bool                    `json:"continuous"`
 	Policy          string                  `json:"policy,omitempty"`
 	ScheduleMode    string                  `json:"schedule_mode,omitempty"`
 	ScheduleSlot    int                     `json:"schedule_slot,omitempty"`
@@ -165,12 +167,20 @@ func (s *Server) startAliasBatchHandler(c *gin.Context) {
 		return
 	}
 	if req.Channel == channelAuto {
+		// All newly started dual-channel jobs run until explicitly stopped.
+		// Old persisted finite jobs retain their original contract on restart.
+		req.Continuous = true
+		req.Count = 0
 		req.IntervalSeconds = 120
 		req.CooldownMinutes = 60
 	}
 	req.AccountID = strings.TrimSpace(req.AccountID)
 	req.LabelPrefix = strings.TrimSpace(req.LabelPrefix)
-	if req.AccountID == "" || req.Count < 1 || req.Count > MaxAliases {
+	if req.Continuous && req.Channel != channelAuto {
+		failCode(c, 400, "VALIDATION_ERROR", "持续运行仅支持新旧双通道")
+		return
+	}
+	if req.AccountID == "" || (!req.Continuous && (req.Count < 1 || req.Count > MaxAliases)) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "account_id 必填，本次注册数量需为 1-750 的整数")
 		return
 	}
@@ -224,11 +234,11 @@ func (s *Server) startAliasBatchHandler(c *gin.Context) {
 		total = len(aliases)
 	}
 	remaining := MaxAliases - total
-	if remaining <= 0 {
+	if !req.Continuous && remaining <= 0 {
 		failCode(c, http.StatusConflict, "ALIAS_LIMIT_REACHED", "该账号别名总数已达到 750 个上限（含已停用别名）")
 		return
 	}
-	if req.Count > remaining {
+	if !req.Continuous && req.Count > remaining {
 		failCode(c, http.StatusBadRequest, "ALIAS_QUOTA_EXCEEDED", fmt.Sprintf("该账号当前有 %d 个别名，本次最多注册 %d 个", total, remaining))
 		return
 	}
@@ -238,7 +248,7 @@ func (s *Server) startAliasBatchHandler(c *gin.Context) {
 	ctx, cancel := context.WithCancel(context.Background())
 	job := &aliasBatchJob{
 		state: aliasBatchStatus{
-			ID: uuid.NewString(), AccountID: req.AccountID, Status: "running", Channel: req.Channel,
+			Continuous: req.Continuous, ID: uuid.NewString(), AccountID: req.AccountID, Status: "running", Channel: req.Channel,
 			Count: req.Count, IntervalSeconds: req.IntervalSeconds, LabelPrefix: req.LabelPrefix,
 			CooldownMinutes: req.CooldownMinutes, BatchSize: aliasBatchSize,
 			AliasTotal: total, MaxAliases: MaxAliases, StartedAt: time.Now().UTC(),

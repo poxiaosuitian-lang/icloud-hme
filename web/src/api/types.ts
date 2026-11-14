@@ -48,6 +48,7 @@ export interface Alias {
 
 export type CreationChannel = 'icloud_web' | 'apple_account' | 'auto'
 export interface AliasBatchStatus {
+  continuous?: boolean
   policy?: string
   schedule_mode?: 'dual' | 'web_only' | 'offline'
   schedule_slot?: number
