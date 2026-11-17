@@ -77,6 +77,7 @@ func (s *Server) processDualSlot(ctx context.Context, job *aliasBatchJob) (time.
 	}
 	availability := s.dualAvailability(job.state.AccountID)
 	observedBinding, _ := s.recoveryBinding(job.state.AccountID)
+	observedWebBinding, _ := s.recoveryBindingKind(job.state.AccountID, "web_session")
 	m.mu.Lock()
 	r := job.dual
 	now := m.dualNow().UTC()
@@ -126,6 +127,9 @@ func (s *Server) processDualSlot(ctx context.Context, job *aliasBatchJob) (time.
 	}
 	if !availability.apple {
 		s.requestRecovery(observedBinding)
+	}
+	if r.WebRejected {
+		s.requestRecoveryKind(observedWebBinding, "web_session")
 	}
 	slot := r.Slot
 	channel := dualSlotChannel(slot)

@@ -16,6 +16,7 @@ import (
 )
 
 type recoveryWaitRequest struct {
+	Kinds    []string `json:"kinds,omitempty"`
 	Version  int      `json:"version"`
 	ClientID string   `json:"client_id"`
 	Sources  []string `json:"sources"`
@@ -59,7 +60,11 @@ func decodeRecovery(c *gin.Context, out any, fields ...string) bool {
 	if err != nil || media != "application/json" || c.Request.URL.RawQuery != "" || c.GetHeader("Content-Encoding") != "" {
 		return false
 	}
-	raw, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, 8192))
+	limit := int64(8192)
+	if c.Request.URL.Path == "/api/integrations/appleservices/recovery/web-session" {
+		limit = importMaxBytes
+	}
+	raw, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, limit))
 	defer clear(raw)
 	if err != nil || !uniqueImportKeys(raw) {
 		return false
@@ -83,7 +88,7 @@ func (s *Server) recoveryWait(c *gin.Context) {
 		return
 	}
 	var req recoveryWaitRequest
-	if !decodeRecovery(c, &req, "version", "client_id", "sources") || req.Version != 1 || !recoveryClientPattern.MatchString(req.ClientID) || len(req.Sources) == 0 || len(req.Sources) > 50 {
+	if !decodeRecoveryWait(c, &req) || req.Version != 1 || !recoveryClientPattern.MatchString(req.ClientID) || len(req.Sources) == 0 || len(req.Sources) > 50 {
 		importFailure(c, 400, "INVALID_RECOVERY_REQUEST")
 		return
 	}
@@ -134,7 +139,7 @@ func (s *Server) recoveryWait(c *gin.Context) {
 			}
 			return
 		}
-		job, notify, delay, err := s.claimRecovery(req.ClientID, req.Sources)
+		job, notify, delay, err := s.claimRecovery(req.ClientID, req.Sources, req.Kinds...)
 		if err != nil {
 			code := "RECOVERY_SOURCE_CONFLICT"
 			status := 409
@@ -195,7 +200,7 @@ func (s *Server) recoveryComplete(c *gin.Context) {
 			break
 		}
 	}
-	current, valid := s.recoveryBinding(r.Account.AccountID)
+	current, valid := s.recoveryBindingKind(r.Account.AccountID, r.Kind)
 	if !found || !valid || !recoveryMatches(r, current) || !sameRecoveryLease(r, req) || !q.now().Before(r.LeaseUntil) {
 		q.mu.Unlock()
 		importFailure(c, 409, "RECOVERY_LEASE_CONFLICT")
@@ -234,7 +239,16 @@ func (s *Server) recoveryComplete(c *gin.Context) {
 			return
 		}
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
-		err := b.VerifyRecovery(ctx, current)
+		var err error
+		if normalizedRecoveryKind(r.Kind) == "web_session" {
+			if web, ok := s.be.(webRecoveryBackend); ok {
+				err = web.VerifyWebRecovery(ctx, current)
+			} else {
+				err = errRecoveryConflict
+			}
+		} else {
+			err = b.VerifyRecovery(ctx, current)
+		}
 		cancel()
 		if err != nil {
 			importFailure(c, 409, "RECOVERY_NOT_READY")
@@ -242,8 +256,9 @@ func (s *Server) recoveryComplete(c *gin.Context) {
 		}
 	}
 	q.mu.Lock()
-	latest := q.records[r.Account.AccountID]
-	after, valid := s.recoveryBinding(r.Account.AccountID)
+	key := recoveryRecordKey(r.Account.AccountID, r.Kind)
+	latest := q.records[key]
+	after, valid := s.recoveryBindingKind(r.Account.AccountID, r.Kind)
 	if !valid || after != current || !recoveryMatches(latest, after) || !sameRecoveryLease(latest, req) || latest.Outcome != "" || !q.now().Before(latest.LeaseUntil) {
 		q.mu.Unlock()
 		importFailure(c, 409, "RECOVERY_LEASE_CONFLICT")
@@ -271,7 +286,7 @@ func (s *Server) recoveryComplete(c *gin.Context) {
 		}
 	}
 	next := q.copy()
-	next[r.Account.AccountID] = latest
+	next[key] = latest
 	err := q.save(next)
 	q.mu.Unlock()
 	if err != nil {
@@ -306,7 +321,16 @@ func (s *Server) recoveryStatus(c *gin.Context) {
 			}
 			message = recoveryMessages[state]
 		}
-		rows = append(rows, gin.H{"account_id": a.ID, "state": state, "message": message, "waiting_connections": q.waiting[v.SourceID], "last_wait_at": q.lastSeen[v.SourceID]})
+		webState := "idle"
+		if web, valid := s.recoveryBindingKind(a.ID, "web_session"); valid {
+			if r, exists := q.records[recoveryRecordKey(a.ID, "web_session")]; exists {
+				webState = r.State
+				if !recoveryMatches(r, web) {
+					webState = "cancelled"
+				}
+			}
+		}
+		rows = append(rows, gin.H{"account_id": a.ID, "web_state": webState, "web_message": recoveryMessages[webState], "state": state, "message": message, "waiting_connections": q.waiting[v.SourceID], "last_wait_at": q.lastSeen[v.SourceID]})
 	}
 	ok(c, gin.H{"accounts": rows, "waiting_connections": len(q.waitSlots)})
 }

@@ -231,6 +231,8 @@ func importSafeLogging() gin.HandlerFunc {
 				operation = "recovery_wait"
 			case "/api/integrations/appleservices/recovery/complete":
 				operation = "recovery_complete"
+			case "/api/integrations/appleservices/recovery/web-session":
+				operation = "recovery_web_session"
 			}
 			log.Printf("appleservices operation=%s status=%d", operation, c.Writer.Status())
 			return

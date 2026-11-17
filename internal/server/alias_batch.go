@@ -103,7 +103,7 @@ func (s *Server) createAliasWithinCustomLimit(ctx context.Context, accountID, la
 	if err := ctx.Err(); err != nil {
 		return nil, 0, err
 	}
-	aliases, err := s.be.ListAliases(accountID)
+	aliases, err := s.listAliasesWithRecovery(accountID)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -226,7 +226,7 @@ func (s *Server) startAliasBatchHandler(c *gin.Context) {
 			}
 		}
 	} else {
-		aliases, err := s.be.ListAliases(req.AccountID)
+		aliases, err := s.listAliasesWithRecovery(req.AccountID)
 		if err != nil {
 			backendFail(c, err)
 			return
@@ -323,7 +323,7 @@ func (s *Server) createBatchAlias(ctx context.Context, accountID, label string, 
 	if err := ctx.Err(); err != nil {
 		return nil, 0, err
 	}
-	aliases, err := s.be.ListAliases(accountID)
+	aliases, err := s.listAliasesWithRecovery(accountID)
 	if err != nil {
 		return nil, 0, err
 	}

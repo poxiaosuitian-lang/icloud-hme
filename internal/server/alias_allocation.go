@@ -366,7 +366,7 @@ func (s *Server) allocateAlias(ctx context.Context, req allocateAliasRequest) (*
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		aliases, err := s.be.ListAliases(acc.ID)
+		aliases, err := s.listAliasesWithRecovery(acc.ID)
 		if err != nil {
 			if listErr == nil {
 				listErr = err
@@ -414,7 +414,7 @@ func (s *Server) allocateAlias(ctx context.Context, req allocateAliasRequest) (*
 			if err := ctx.Err(); err != nil {
 				return nil, err, true
 			}
-			aliases, err := s.be.ListAliases(pool.account.ID)
+			aliases, err := s.listAliasesWithRecovery(pool.account.ID)
 			if err != nil {
 				return nil, err, false // No creation sent; another account is safe.
 			}

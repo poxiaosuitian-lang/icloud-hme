@@ -145,6 +145,7 @@ func (s *Server) register() {
 	api.POST("/integrations/appleservices/apple-login", s.importAppleLogin)
 	api.POST("/integrations/appleservices/recovery/wait", s.recoveryWait)
 	api.POST("/integrations/appleservices/recovery/complete", s.recoveryComplete)
+	api.POST("/integrations/appleservices/recovery/web-session", s.recoveryWebSession)
 	{
 		// ===== 认证(公开) =====
 		api.POST("/auth/login", s.handleLogin)
@@ -349,7 +350,7 @@ func (s *Server) listAliasesHandler(c *gin.Context) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数缺失: account_id")
 		return
 	}
-	aliases, err := s.be.ListAliases(accountID)
+	aliases, err := s.listAliasesWithRecovery(accountID)
 	if err != nil {
 		backendFail(c, err)
 		return

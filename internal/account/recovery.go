@@ -27,7 +27,13 @@ func AppleSessionRevision(a *Account) string {
 }
 func (m *Manager) RecoveryBinding(id string) (RecoveryBinding, bool) {
 	a, ok := m.GetAccount(id)
-	if !ok || normalizeIdentity(a.VerifiedAppleID) == "" || a.ImportRevision == 0 || a.VerifiedDSID == "" || a.ImportSourceID != ImportSourceID(a.VerifiedAppleID) || normalizeIdentity(a.RealEmail) != normalizeIdentity(a.VerifiedAppleID) || (a.Host != "icloud.com" && a.Host != "icloud.com.cn") {
+	if !ok {
+		return RecoveryBinding{}, false
+	}
+	return recoveryBindingFor(a)
+}
+func recoveryBindingFor(a *Account) (RecoveryBinding, bool) {
+	if a == nil || normalizeIdentity(a.VerifiedAppleID) == "" || a.ImportRevision == 0 || a.VerifiedDSID == "" || a.ImportSourceID != ImportSourceID(a.VerifiedAppleID) || normalizeIdentity(a.RealEmail) != normalizeIdentity(a.VerifiedAppleID) || (a.Host != "icloud.com" && a.Host != "icloud.com.cn") {
 		return RecoveryBinding{}, false
 	}
 	address, err := mail.ParseAddress(a.ICloudEmail)

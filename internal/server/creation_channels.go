@@ -57,6 +57,7 @@ func (s *Server) creationChannels(id, mode string) ([]string, error) {
 
 func (s *Server) createOnChannel(ctx context.Context, id, label, channel string) (*hme.CreateResult, error) {
 	observed, _ := s.recoveryBinding(id)
+	webObserved, _ := s.recoveryBindingKind(id, "web_session")
 	var result *hme.CreateResult
 	var err error
 	if channel == "" || channel == channelWeb {
@@ -77,6 +78,9 @@ func (s *Server) createOnChannel(ctx context.Context, id, label, channel string)
 			} else {
 				s.requestRecovery(observed)
 			}
+		}
+		if channel == channelWeb && (result == nil || result.Email == "") {
+			s.noteWebRecovery(webObserved, err)
 		}
 		return result, &e
 	}

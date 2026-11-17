@@ -36,6 +36,7 @@ func (b *managerBackend) VerifyRecovery(ctx context.Context, v account.RecoveryB
 }
 
 type recoveryRecord struct {
+	Kind            string                  `json:"kind,omitempty"`
 	ID              string                  `json:"id"`
 	Account         account.RecoveryBinding `json:"account"`
 	AcceptedSession string                  `json:"accepted_session,omitempty"`
@@ -97,7 +98,7 @@ func (q *recoveryQueue) load() error {
 	}
 	ids := map[string]bool{}
 	for id, r := range doc.Records {
-		if id != r.Account.AccountID || !recoveryIDPattern.MatchString(r.ID) || ids[r.ID] || !recoverySourcePattern.MatchString(r.Account.SourceID) || !recoveryLeasePattern.MatchString(r.Account.Binding) || r.Account.Session == "" || r.Failures < 0 || r.Failures > 3 {
+		if !validRecoveryKind(r.Kind) || id != recoveryRecordKey(r.Account.AccountID, r.Kind) || !recoveryIDPattern.MatchString(r.ID) || ids[r.ID] || !recoverySourcePattern.MatchString(r.Account.SourceID) || !recoveryLeasePattern.MatchString(r.Account.Binding) || r.Account.Session == "" || r.Failures < 0 || r.Failures > 3 {
 			return errRecoveryStorage
 		}
 		ids[r.ID] = true
@@ -189,17 +190,21 @@ func recoveryMatches(r recoveryRecord, current account.RecoveryBinding) bool {
 // Called only on a creation event, with the version observed BEFORE the failed
 // operation. A late failure never queues recovery for a newer successful login.
 func (s *Server) requestRecovery(observed account.RecoveryBinding) {
+	s.requestRecoveryKind(observed, "apple_login")
+}
+func (s *Server) requestRecoveryKind(observed account.RecoveryBinding, kind string) {
 	q := s.recovery
 	if q == nil || observed.AccountID == "" {
 		return
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	current, ok := s.recoveryBinding(observed.AccountID)
+	current, ok := s.recoveryBindingKind(observed.AccountID, kind)
 	if !ok || current != observed {
 		return
 	}
-	if old, exists := q.records[current.AccountID]; exists && old.Account == current && old.State != "cancelled" {
+	key := recoveryRecordKey(current.AccountID, kind)
+	if old, exists := q.records[key]; exists && old.Account == current && old.State != "cancelled" {
 		return
 	}
 	nonce, err := recoveryNonce()
@@ -207,7 +212,7 @@ func (s *Server) requestRecovery(observed account.RecoveryBinding) {
 		return
 	}
 	next := q.copy()
-	next[current.AccountID] = recoveryRecord{ID: "job_" + nonce, Account: current, State: "pending", Due: q.now().UTC()}
+	next[key] = recoveryRecord{Kind: kind, ID: "job_" + nonce, Account: current, State: "pending", Due: q.now().UTC()}
 	_ = q.save(next) // Creation still fails/downgrades if persistence fails; never lease uncommitted work.
 }
 
@@ -233,7 +238,7 @@ func (s *Server) recoverySources(sources []string) (map[string]account.RecoveryB
 	}
 	return selected, nil
 }
-func (s *Server) claimRecovery(client string, sources []string) (*recoveryJob, <-chan struct{}, time.Duration, error) {
+func (s *Server) claimRecovery(client string, sources []string, kinds ...string) (*recoveryJob, <-chan struct{}, time.Duration, error) {
 	q := s.recovery
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -241,6 +246,22 @@ func (s *Server) claimRecovery(client string, sources []string) (*recoveryJob, <
 	if err != nil {
 		return nil, q.notify, 0, err
 	}
+	if len(kinds) == 0 {
+		kinds = []string{"apple_login"}
+	}
+	expanded := map[string]account.RecoveryBinding{}
+	for id, binding := range selected {
+		for _, kind := range kinds {
+			if kind == "web_session" {
+				if web, ok := s.recoveryBindingKind(id, kind); ok {
+					expanded[recoveryRecordKey(id, kind)] = web
+				}
+			} else {
+				expanded[id] = binding
+			}
+		}
+	}
+	selected = expanded
 	now := q.now().UTC()
 	next := q.copy()
 	changed := false
@@ -303,7 +324,7 @@ func (s *Server) claimRecovery(client string, sources []string) (*recoveryJob, <
 		r.Outcome = ""
 		next[id] = r
 		changed = true
-		job = &recoveryJob{r.ID, lease, r.Account.SourceID, "apple_login"}
+		job = &recoveryJob{r.ID, lease, r.Account.SourceID, normalizedRecoveryKind(r.Kind)}
 	}
 	if changed {
 		if err = q.save(next); err != nil {
@@ -323,6 +344,9 @@ func (s *Server) acceptRecoverySession(source string) {
 	next := q.copy()
 	changed := false
 	for id, r := range next {
+		if normalizedRecoveryKind(r.Kind) != "apple_login" {
+			continue
+		}
 		if r.Account.SourceID != source || r.State != "leased" || !q.now().Before(r.LeaseUntil) {
 			continue
 		}
@@ -341,6 +365,9 @@ func (s *Server) acceptRecoverySession(source string) {
 // Only clear the rejection for the failed revision, never change task state,
 // deadlines, budget, counts or stop flags. Replayed ready confirmations are safe.
 func (s *Server) applyRecoveryReady(r recoveryRecord) {
+	if normalizedRecoveryKind(r.Kind) == "web_session" {
+		return
+	} // Web scheduler uses cookie/validation revision on its next normal slot.
 	current, ok := s.recoveryBinding(r.Account.AccountID)
 	if !ok || !recoveryMatches(r, current) {
 		return

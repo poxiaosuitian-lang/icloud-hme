@@ -213,7 +213,7 @@ func (b *managerBackend) CreateAlias(accountID, label string) (*hme.CreateResult
 	// A failed reservation may already have succeeded upstream. Never generate
 	// another candidate automatically; the caller refreshes the count first.
 	result, err := client.CreateAlias(label, 1)
-	_ = b.mgr.SaveCookies(accountID, client.Cookies, client.AccountRevision)
+	_ = b.mgr.SaveCookies(accountID, client.Cookies, client.AccountRevision, client.WebRecoveryRevision)
 	if err != nil {
 		return nil, classifyUpstreamErr("创建邮箱失败", err)
 	}
@@ -227,7 +227,7 @@ func (b *managerBackend) ListAliases(accountID string) ([]hme.Alias, error) {
 		return nil, mapAccountErr(err)
 	}
 	aliases, err := client.ListAliases()
-	_ = b.mgr.SaveCookies(accountID, client.Cookies, client.AccountRevision)
+	_ = b.mgr.SaveCookies(accountID, client.Cookies, client.AccountRevision, client.WebRecoveryRevision)
 	if err != nil {
 		return nil, classifyUpstreamErr("获取别名列表失败", err)
 	}
@@ -246,7 +246,7 @@ func (b *managerBackend) SetAliasActive(accountID, anonymousID string, active bo
 	} else {
 		success, err = client.DeactivateHME(anonymousID)
 	}
-	_ = b.mgr.SaveCookies(accountID, client.Cookies, client.AccountRevision)
+	_ = b.mgr.SaveCookies(accountID, client.Cookies, client.AccountRevision, client.WebRecoveryRevision)
 	if err != nil {
 		msg := "操作失败"
 		if !active {
@@ -266,7 +266,7 @@ func (b *managerBackend) DeleteAlias(accountID, anonymousID string) error {
 		return mapAccountErr(err)
 	}
 	err = client.Delete(anonymousID)
-	_ = b.mgr.SaveCookies(accountID, client.Cookies, client.AccountRevision)
+	_ = b.mgr.SaveCookies(accountID, client.Cookies, client.AccountRevision, client.WebRecoveryRevision)
 	if err != nil {
 		return classifyUpstreamErr("删除失败", err)
 	}

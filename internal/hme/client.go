@@ -66,20 +66,21 @@ type Alias struct {
 // 首次调用业务方法时会自动触发 ValidateSession 解析 HME 服务端点。
 type Client struct {
 	// AccountRevision is a local credential generation, never sent to Apple.
-	AccountRevision uint64
-	Cookies         map[string]string
-	Host            string // "icloud.com" 或 "icloud.com.cn"
-	Proxy           string // HTTP/SOCKS5 代理
-	Username        string // iCloud 账号 (用于登录)
-	Password        string // iCloud 密码 (用于登录)
-	Verbose         bool
-	httpc           tls_client.HttpClient
-	setupURL        string
-	serviceURL      string
-	dsid            string // 从 validate 响应提取
-	clientID        string // UUID,每次会话生成
-	accountInfo     *AccountInfo
-	pendingAuth     *authState // 仅驻留内存的两步登录会话，不持久化密码
+	AccountRevision     uint64
+	WebRecoveryRevision uint64
+	Cookies             map[string]string
+	Host                string // "icloud.com" 或 "icloud.com.cn"
+	Proxy               string // HTTP/SOCKS5 代理
+	Username            string // iCloud 账号 (用于登录)
+	Password            string // iCloud 密码 (用于登录)
+	Verbose             bool
+	httpc               tls_client.HttpClient
+	setupURL            string
+	serviceURL          string
+	dsid                string // 从 validate 响应提取
+	clientID            string // UUID,每次会话生成
+	accountInfo         *AccountInfo
+	pendingAuth         *authState // 仅驻留内存的两步登录会话，不持久化密码
 }
 
 // NewClient 创建一个新的 HME 客户端,底层使用 Chrome TLS 指纹。

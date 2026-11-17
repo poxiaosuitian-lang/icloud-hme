@@ -75,7 +75,7 @@ func recoveryCall(s *Server, path string, body any) *httptest.ResponseRecorder {
 }
 func waitBody(b *recoveryFake, id string) recoveryWaitRequest {
 	v, _ := b.RecoveryBinding(id)
-	return recoveryWaitRequest{1, strings.Repeat("b", 32), []string{v.SourceID}}
+	return recoveryWaitRequest{Version: 1, ClientID: strings.Repeat("b", 32), Sources: []string{v.SourceID}}
 }
 func receiveJob(t *testing.T, s *Server, b *recoveryFake, id string) *recoveryJob {
 	t.Helper()
