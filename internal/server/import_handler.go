@@ -24,8 +24,8 @@ const importPath = "/api/integrations/appleservices/accounts"
 const importMaxBytes = 256 << 10
 
 func ValidateImportToken(token string) error {
-	if token != "" && (len(token) < 32 || len(token) > 512 || strings.IndexFunc(token, unicode.IsSpace) >= 0 || strings.IndexFunc(token, unicode.IsControl) >= 0) {
-		return errors.New("ICLOUD_HME_IMPORT_TOKEN must contain 32–512 non-whitespace characters")
+	if token != "" && (len(token) < 6 || len(token) > 512 || strings.IndexFunc(token, unicode.IsSpace) >= 0 || strings.IndexFunc(token, unicode.IsControl) >= 0) {
+		return errors.New("ICLOUD_HME_IMPORT_TOKEN must contain 6–512 non-whitespace characters")
 	}
 	return nil
 }

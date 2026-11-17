@@ -200,7 +200,18 @@ func TestImportTokenConfiguration(t *testing.T) {
 			t.Fatal("invalid token accepted")
 		}
 	}
-	if ValidateImportToken("") != nil || ValidateImportToken(testImportToken) != nil {
+	if ValidateImportToken("") != nil || ValidateImportToken(testImportToken) != nil || ValidateImportToken("s1xKey") != nil {
 		t.Fatal("valid token rejected")
+	}
+}
+
+func TestImportAcceptsSixCharacterKey(t *testing.T) {
+	s, b := importServer(t)
+	s.cfg.ImportToken = "s1xKey"
+	if w := importHTTP(s, importBody(), "wrong6"); w.Code != 401 || b.calls != 0 {
+		t.Fatal("incorrect six-character key accepted")
+	}
+	if w := importHTTP(s, importBody(), "s1xKey"); w.Code != 200 || b.calls != 1 {
+		t.Fatal("correct six-character key rejected", w.Code)
 	}
 }
